@@ -152,6 +152,14 @@ git clean -fd
 
 That ensures the next session starts from the latest remote branch after the previous session releases and systemd restarts the worker.
 
+Follow-up turns sent before `CURSOR_WORKER_IDLE_RELEASE_TIMEOUT` expires can
+reuse the still-claimed worker and its current working tree. After the timeout
+expires, the worker is released and restarted; the next session starts from a
+clean worktree reset to `origin/<branch>`. Users should commit and push any
+changes they want to keep before the session times out. For follow-ups after a
+timeout, instruct the agent to pull or check out the branch that contains the
+prior work before continuing.
+
 ## Autoscaling
 
 `cursor-workers-autoscale` scales up only. Defaults are configured in `/etc/cursor-workers/env`:
