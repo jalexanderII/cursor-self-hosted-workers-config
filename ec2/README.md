@@ -1,18 +1,3 @@
-# Cursor Self-Hosted Workers Config
-
-Reference configurations for running Cursor self-hosted cloud workers.
-
-## Layout
-
-```text
-ec2/   Single-instance AWS EC2 setup using systemd, git worktrees, Secrets Manager, and scale-up-only local autoscaling.
-```
-
-Future platform templates, such as AWS Kubernetes deployments, should live beside `ec2/` as separate top-level directories.
-
-## Available Templates
-
-- [`ec2/`](ec2/) - production-oriented EC2 worker pool setup
 # Cursor Self-Hosted Workers on EC2
 
 This repo contains the scripts and systemd units for running Cursor self-hosted cloud workers on a single EC2 instance.
