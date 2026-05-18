@@ -1,0 +1,6 @@
+[Unit]
+Description=Autoscale Cursor self-hosted workers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cursor-workers-autoscale

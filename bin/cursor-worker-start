@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Start exactly one Cursor pool worker.
+#
+# systemd injects CURSOR_WORKER_* for the specific worker slot. Before the
+# worker registers as available, this script resets its git workspace to the
+# configured remote branch so a completed session cannot leak dirty files into
+# the next session.
+: "${CURSOR_WORKER_DIR:?missing CURSOR_WORKER_DIR}"
+: "${CURSOR_WORKER_NAME:?missing CURSOR_WORKER_NAME}"
+: "${CURSOR_WORKER_PORT:?missing CURSOR_WORKER_PORT}"
+
+# Shared deployment configuration and secret IDs live here.
+set -a
+. /etc/cursor-workers/env
+set +a
+
+MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
+BRANCH="$(jq -r '.branch' "$MANIFEST")"
+AGENT_BIN="${CURSOR_AGENT_BIN:-/home/ubuntu/.local/bin/agent}"
+LABELS_FILE="${CURSOR_WORKERS_LABELS_FILE:-/etc/cursor-workers/labels.json}"
+LOCK_FILE="${CURSOR_WORKERS_GIT_CLEAN_LOCK:-/tmp/cursor-worker-git-cleanup.lock}"
+CLEAN_MODE="${CURSOR_WORKER_CLEAN_MODE:-normal}"
+
+echo "Preparing clean worker workspace: ${CURSOR_WORKER_DIR} -> origin/${BRANCH}"
+
+# Worktrees share git metadata, so serialize fetch/reset cleanup across workers.
+# Without the lock, multiple workers starting together can contend on git's
+# shared object database and worktree metadata.
+(
+  flock -x 200
+
+  git -C "$CURSOR_WORKER_DIR" fetch origin --prune
+  git -C "$CURSOR_WORKER_DIR" reset --hard "origin/${BRANCH}"
+
+  # "normal" removes untracked files while preserving ignored caches such as
+  # node_modules. "full" is more sterile but slower because it removes ignored
+  # files too. "none" is useful only for debugging.
+  case "$CLEAN_MODE" in
+    normal)
+      git -C "$CURSOR_WORKER_DIR" clean -fd
+      ;;
+    full)
+      git -C "$CURSOR_WORKER_DIR" clean -fdx
+      ;;
+    none)
+      ;;
+    *)
+      echo "Invalid CURSOR_WORKER_CLEAN_MODE: ${CLEAN_MODE}" >&2
+      exit 1
+      ;;
+  esac
+) 200>"$LOCK_FILE"
+
+# Fetch the service account API key at process start. The key is never written
+# to disk by this script.
+CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "$CURSOR_API_SECRET_ID" \
+  --query SecretString \
+  --output text)"
+
+export CURSOR_API_KEY
+
+# Keep the command in an array so optional flags can be appended safely.
+cmd=(
+  "$AGENT_BIN" worker start
+  --pool \
+  --pool-name "$CURSOR_WORKER_POOL_NAME" \
+  --worker-dir "$CURSOR_WORKER_DIR" \
+  --management-addr "127.0.0.1:${CURSOR_WORKER_PORT}" \
+  --idle-release-timeout "$CURSOR_WORKER_IDLE_RELEASE_TIMEOUT" \
+  --name "$CURSOR_WORKER_NAME"
+)
+
+# Labels are optional routing/metadata. They are not a security boundary.
+if [ -f "$LABELS_FILE" ]; then
+  cmd+=(--labels-file "$LABELS_FILE")
+fi
+
+exec "${cmd[@]}"

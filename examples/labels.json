@@ -1,0 +1,4 @@
+{
+  "env": "production",
+  "fleet": "ec2-workers-prod"
+}

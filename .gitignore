@@ -1,0 +1,23 @@
+# Secrets and local credentials
+*.pem
+*.key
+*.p8
+*.p12
+*.crt
+*.kubeconfig
+.env
+.env.*
+!.env.example
+**/.git-credentials
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Logs and generated state
+*.log
+*.tmp
+tmp/
+dist/
+build/

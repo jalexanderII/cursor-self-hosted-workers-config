@@ -1,0 +1,6 @@
+[Unit]
+Description=Publish Cursor worker metrics to CloudWatch
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cursor-workers-publish-metrics

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Scale up the local EC2 worker pool when local idle capacity is too low.
+#
+# This intentionally uses the local manifest plus each worker's localhost
+# /readyz endpoint instead of the team-wide Cursor summary API. The summary API
+# counts all workers in the Cursor team, while this scaler should only manage
+# workers on this instance.
+set -a
+. /etc/cursor-workers/env
+set +a
+
+MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
+MIN_IDLE="${CURSOR_AUTOSCALE_MIN_IDLE:-1}"
+SCALE_STEP="${CURSOR_AUTOSCALE_SCALE_STEP:-2}"
+MAX_LOCAL_WORKERS="${CURSOR_AUTOSCALE_MAX_LOCAL_WORKERS:-15}"
+
+count_idle_local_workers() {
+  local idle=0
+
+  while read -r worker; do
+    local port
+    port="$(echo "$worker" | jq -r '.managementPort')"
+
+    local body
+    body="$(curl -s --max-time 2 "http://127.0.0.1:${port}/readyz" || true)"
+
+    # A worker is usable for a new session only when it is connected, unclaimed,
+    # and reports status=ok. claimed=true means it is still reserved for an
+    # active session or the idle follow-up window.
+    if echo "$body" | jq -e '.connected == true and .claimed == false and .status == "ok"' >/dev/null 2>&1; then
+      idle=$((idle + 1))
+    fi
+  done < <(jq -c '.workers[]' "$MANIFEST")
+
+  echo "$idle"
+}
+
+current="$(jq '.workers | length' "$MANIFEST")"
+idle="$(count_idle_local_workers)"
+
+echo "local workers: current=${current} idle=${idle} minIdle=${MIN_IDLE} max=${MAX_LOCAL_WORKERS}"
+
+if [ "$idle" -ge "$MIN_IDLE" ]; then
+  echo "enough idle workers; no scale-up needed"
+  exit 0
+fi
+
+if [ "$current" -ge "$MAX_LOCAL_WORKERS" ]; then
+  echo "max local workers reached; no scale-up"
+  exit 0
+fi
+
+# Add at most SCALE_STEP workers, capped by MAX_LOCAL_WORKERS.
+to_add="$SCALE_STEP"
+if [ $((current + to_add)) -gt "$MAX_LOCAL_WORKERS" ]; then
+  to_add=$((MAX_LOCAL_WORKERS - current))
+fi
+
+echo "scaling up by ${to_add} worker(s)"
+
+# Append new worker entries to the manifest. Reconcile will create the worktrees
+# and start only the new services.
+python3 - "$MANIFEST" "$to_add" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+to_add = int(sys.argv[2])
+
+data = json.loads(path.read_text())
+workers = data["workers"]
+
+existing_ids = {int(w["id"]) for w in workers}
+max_id = max(existing_ids) if existing_ids else 0
+used_ports = {int(w["managementPort"]) for w in workers}
+
+for _ in range(to_add):
+    n = max_id + 1
+    while n in existing_ids:
+        n += 1
+
+    port = 8080 + n
+    while port in used_ports:
+        port += 1
+
+    workers.append({
+        "id": str(n),
+        "name": f"ec2-worker-{n}",
+        "workerDir": f"/opt/cursor-workers/worker-{n}",
+        "managementPort": port,
+        "worktree": True
+    })
+
+    existing_ids.add(n)
+    used_ports.add(port)
+    max_id = n
+
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+
+/usr/local/bin/cursor-workers-reconcile

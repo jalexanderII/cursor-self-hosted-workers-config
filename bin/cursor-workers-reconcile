@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Reconcile desired worker state from /etc/cursor-workers/workers.json.
+#
+# This script is intentionally non-disruptive: it creates missing clones,
+# worktrees, and systemd units, then starts only services that are not already
+# running. It does not restart active workers, because active workers may be
+# claimed by live Cursor sessions.
+set -a
+. /etc/cursor-workers/env
+set +a
+
+MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
+BASE_DIR="${CURSOR_WORKERS_BASE_DIR:-/opt/cursor-workers/base}"
+WORKER_USER="${CURSOR_WORKER_USER:-ubuntu}"
+GITHUB_HOST="${GITHUB_HOST:-github.com}"
+
+REPO="$(jq -r '.repo' "$MANIFEST")"
+BRANCH="$(jq -r '.branch' "$MANIFEST")"
+
+# The base checkout owns the shared git object database. Additional worker
+# slots are created as worktrees from this checkout.
+if [ ! -d "$BASE_DIR/.git" ]; then
+  mkdir -p "$(dirname "$BASE_DIR")"
+  chown "$WORKER_USER:$WORKER_USER" "$(dirname "$BASE_DIR")"
+  sudo -u "$WORKER_USER" git clone "https://${GITHUB_HOST}/${REPO}.git" "$BASE_DIR"
+  sudo -u "$WORKER_USER" git -C "$BASE_DIR" checkout "$BRANCH"
+fi
+
+# Keep the base repo fresh so newly created worktrees start from current remote
+# state. Existing running workers clean themselves on their next start.
+sudo -u "$WORKER_USER" git -C "$BASE_DIR" fetch origin --prune
+sudo -u "$WORKER_USER" git -C "$BASE_DIR" worktree prune || true
+
+unit_changed=0
+
+while read -r worker; do
+  id="$(echo "$worker" | jq -r '.id')"
+  name="$(echo "$worker" | jq -r '.name')"
+  dir="$(echo "$worker" | jq -r '.workerDir')"
+  port="$(echo "$worker" | jq -r '.managementPort')"
+  worktree="$(echo "$worker" | jq -r '.worktree')"
+
+  # Worktree entries are additional isolated working directories for the same
+  # repo. The base worker uses the original clone and has worktree=false.
+  if [ "$worktree" = "true" ] && [ ! -e "$dir" ]; then
+    echo "creating worktree for worker ${id}: ${dir}"
+    sudo -u "$WORKER_USER" git -C "$BASE_DIR" worktree add "$dir" "origin/${BRANCH}"
+  fi
+
+  unit="/etc/systemd/system/cursor-worker-${id}.service"
+  tmp="$(mktemp)"
+
+  # Generate one systemd service per worker slot. The service-specific
+  # Environment values tell cursor-worker-start which worktree and port to use.
+  cat > "$tmp" <<UNIT
+[Unit]
+Description=Cursor self-hosted cloud worker ${id}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${WORKER_USER}
+WorkingDirectory=${dir}
+Environment=PATH=/home/${WORKER_USER}/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/cursor-workers/env
+Environment=CURSOR_WORKER_DIR=${dir}
+Environment=CURSOR_WORKER_NAME=${name}
+Environment=CURSOR_WORKER_PORT=${port}
+ExecStart=/usr/local/bin/cursor-worker-start
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  # Only replace unit files when content changed. If a running service's unit
+  # changes, daemon-reload makes the new definition available for its next
+  # restart without interrupting the current session.
+  if [ ! -f "$unit" ] || ! cmp -s "$tmp" "$unit"; then
+    echo "installing/updating unit file: ${unit}"
+    install -m 0644 "$tmp" "$unit"
+    unit_changed=1
+  fi
+
+  rm -f "$tmp"
+done < <(jq -c '.workers[]' "$MANIFEST")
+
+if [ "$unit_changed" -eq 1 ]; then
+  echo "reloading systemd units"
+  systemctl daemon-reload
+fi
+
+while read -r id; do
+  service="cursor-worker-${id}.service"
+
+  systemctl enable "$service" >/dev/null
+
+  # Do not restart active services here. Starting missing/inactive services is
+  # safe and is what allows autoscale-up to add capacity without disrupting work.
+  if systemctl is-active --quiet "$service"; then
+    echo "${service} already running; leaving it alone"
+  else
+    echo "${service} is not active; starting it"
+    systemctl start "$service"
+  fi
+done < <(jq -r '.workers[].id' "$MANIFEST")
