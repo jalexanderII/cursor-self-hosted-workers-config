@@ -27,6 +27,7 @@ systemd/
   cursor-workers-metrics.timer
 
 examples/
+  cursor-workers-autoscale-team-summary.example.sh
   env.example
   labels.json
   workers.example.json
@@ -165,6 +166,13 @@ It reads `/etc/cursor-workers/workers.json`, checks each local `/readyz` endpoin
 
 There is intentionally no scale-down logic.
 
+The default autoscaler uses local worker state so it stays correct when a Cursor
+team has multiple self-hosted fleets. If a deployment has exactly one Cursor
+team, one EC2 instance, and no other self-hosted workers, the simpler
+team-summary approach in `examples/cursor-workers-autoscale-team-summary.example.sh`
+can be used instead. That version reads `GET /v0/private-workers/summary` and
+assumes the team-wide totals match the local EC2 fleet.
+
 ## Operations
 
 Check workers:
@@ -291,6 +299,26 @@ systemctl is-active cursor-worker-<id>.service
 
 That keeps scaling scoped to this EC2 fleet even when the Cursor team has other
 self-hosted workers connected.
+
+If this EC2 instance is the only self-hosted worker fleet in the Cursor team,
+the simpler team-summary path is acceptable:
+
+```bash
+CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "$CURSOR_API_SECRET_ID" \
+  --query SecretString \
+  --output text)"
+
+curl -s -u "$CURSOR_API_KEY:" \
+  "https://api.cursor.com/v0/private-workers/summary" \
+  | jq '{total: .teamSummary.totalConnected, inUse: .teamSummary.inUse, idle: (.teamSummary.totalConnected - .teamSummary.inUse)}'
+```
+
+In that single-fleet case, `examples/cursor-workers-autoscale-team-summary.example.sh`
+shows how to scale this EC2 based on team-wide idle capacity. Do not use that
+example once the Cursor team has more than one worker host, repo fleet, service
+account fleet, or external self-hosted worker pool.
 
 ## Notes
 
