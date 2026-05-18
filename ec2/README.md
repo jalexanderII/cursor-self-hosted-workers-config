@@ -50,6 +50,18 @@ secretsmanager:GetSecretValue
 
 for those secret ARNs.
 
+## Cursor Prerequisites
+
+Before installing the EC2 worker fleet:
+
+1. Enable self-hosted / private workers for the Cursor team.
+2. Connect the Cursor GitHub integration at the team level and authorize the target repo.
+3. Create a Cursor service account and store its API key in AWS Secrets Manager.
+4. Create a GitHub credential for the worker host, usually a fine-grained PAT with `Contents: Read and write` for the target repo, and store it in AWS Secrets Manager.
+5. Turn on the team's self-hosted pool in the Cursor Cloud Agents dashboard.
+
+Pool names and labels are routing metadata, not a security boundary. Use separate Cursor teams, GitHub integrations, service accounts, and fleets when groups or customers need hard isolation from each other.
+
 ## Install
 
 Install dependencies:
@@ -82,7 +94,7 @@ Install config:
 
 ```bash
 sudo mkdir -p /etc/cursor-workers
-sudo install -m 640 examples/env.example /etc/cursor-workers/env
+sudo install -m 644 examples/env.example /etc/cursor-workers/env
 sudo install -m 644 examples/labels.json /etc/cursor-workers/labels.json
 sudo install -m 644 examples/workers.example.json /etc/cursor-workers/workers.json
 ```
@@ -114,8 +126,8 @@ Install the GitHub credential helper:
 
 ```bash
 sudo install -m 755 bin/git-credential-github-secretsmanager /usr/local/bin/git-credential-github-secretsmanager
-git config --global credential.helper /usr/local/bin/git-credential-github-secretsmanager
-rm -f ~/.git-credentials
+sudo -u ubuntu git config --global credential.helper /usr/local/bin/git-credential-github-secretsmanager
+sudo rm -f /home/ubuntu/.git-credentials
 ```
 
 Run reconcile:
@@ -152,6 +164,11 @@ git clean -fd
 
 That ensures the next session starts from the latest remote branch after the previous session releases and systemd restarts the worker.
 
+Additional workers use git worktrees created from the base checkout. Those
+worktrees start from `origin/<branch>` and may initially be detached at that
+remote commit. Agent tasks that make changes should create or check out a
+feature branch, commit, and push before finishing.
+
 Follow-up turns sent before `CURSOR_WORKER_IDLE_RELEASE_TIMEOUT` expires can
 reuse the still-claimed worker and its current working tree. After the timeout
 expires, the worker is released and restarted; the next session starts from a
@@ -173,6 +190,10 @@ MAX_LOCAL_WORKERS=15
 It reads `/etc/cursor-workers/workers.json`, checks each local `/readyz` endpoint, appends workers if idle capacity is too low, then calls `cursor-workers-reconcile`.
 
 There is intentionally no scale-down logic.
+
+`cursor-workers-autoscale` and `cursor-workers-reconcile` both take local
+`flock` locks, so a timer run and a manual reconcile do not edit
+`workers.json` or create worktrees at the same time.
 
 The default autoscaler uses local worker state so it stays correct when a Cursor
 team has multiple self-hosted fleets. If a deployment has exactly one Cursor

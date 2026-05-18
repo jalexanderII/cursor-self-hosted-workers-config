@@ -15,6 +15,14 @@ MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
 BASE_DIR="${CURSOR_WORKERS_BASE_DIR:-/opt/cursor-workers/base}"
 WORKER_USER="${CURSOR_WORKER_USER:-ubuntu}"
 GITHUB_HOST="${GITHUB_HOST:-github.com}"
+LOCK_FILE="${CURSOR_WORKERS_RECONCILE_LOCK:-/var/lock/cursor-workers-reconcile.lock}"
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+  echo "another cursor-workers-reconcile process is already running; exiting"
+  exit 0
+fi
 
 REPO="$(jq -r '.repo' "$MANIFEST")"
 BRANCH="$(jq -r '.branch' "$MANIFEST")"

@@ -15,6 +15,14 @@ MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
 MIN_IDLE="${CURSOR_AUTOSCALE_MIN_IDLE:-1}"
 SCALE_STEP="${CURSOR_AUTOSCALE_SCALE_STEP:-2}"
 MAX_LOCAL_WORKERS="${CURSOR_AUTOSCALE_MAX_LOCAL_WORKERS:-15}"
+LOCK_FILE="${CURSOR_WORKERS_AUTOSCALE_LOCK:-/var/lock/cursor-workers-autoscale.lock}"
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+  echo "another cursor-workers-autoscale process is already running; exiting"
+  exit 0
+fi
 
 count_idle_local_workers() {
   local idle=0
