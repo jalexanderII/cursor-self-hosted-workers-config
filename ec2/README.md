@@ -189,6 +189,50 @@ View worker logs:
 sudo journalctl -u 'cursor-worker-*.service' -f
 ```
 
+For one worker:
+
+```bash
+sudo journalctl -u cursor-worker-3.service -f
+```
+
+For journal metadata-level verbosity:
+
+```bash
+sudo journalctl -u cursor-worker-3.service -f -o verbose
+```
+
+`journalctl -o verbose` only changes journal output formatting. It does not
+make the Cursor agent emit more logs.
+
+If Cursor support asks for agent-level `--verbose` or `--debug`, run one idle
+worker manually in the foreground instead of changing the shared scripts:
+
+```bash
+sudo systemctl stop cursor-worker-3.service
+
+set -a
+. /etc/cursor-workers/env
+set +a
+
+export CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "$CURSOR_API_SECRET_ID" \
+  --query SecretString \
+  --output text)"
+
+agent worker start --pool \
+  --pool-name "$CURSOR_WORKER_POOL_NAME" \
+  --worker-dir /opt/cursor-workers/worker-3 \
+  --management-addr 127.0.0.1:8083 \
+  --idle-release-timeout "$CURSOR_WORKER_IDLE_RELEASE_TIMEOUT" \
+  --name ec2-worker-3 \
+  --verbose
+```
+
+Use `--debug` instead of `--verbose` only when needed. Press `Ctrl+C` to stop
+the foreground worker, then return it to systemd with `sudo systemctl start
+cursor-worker-3.service`.
+
 View autoscaler logs:
 
 ```bash
@@ -200,6 +244,53 @@ View metrics publisher logs:
 ```bash
 sudo journalctl -u cursor-workers-metrics.service -n 100 --no-pager
 ```
+
+## Fleet API Visibility
+
+The team summary endpoint is useful for team-wide capacity, but it is not scoped
+to this EC2 instance or service account:
+
+```bash
+CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "$CURSOR_API_SECRET_ID" \
+  --query SecretString \
+  --output text)"
+
+curl -s -u "$CURSOR_API_KEY:" \
+  "https://api.cursor.com/v0/private-workers/summary" | jq
+```
+
+`teamSummary.totalConnected` and `teamSummary.inUse` count all self-hosted
+workers in the Cursor team. Do not use this endpoint alone to decide how many
+workers this EC2 instance should add.
+
+For worker-level visibility, list workers and filter by repo, worker name, and
+service account:
+
+```bash
+curl -s -u "$CURSOR_API_KEY:" \
+  "https://api.cursor.com/v0/private-workers?status=all&limit=100" \
+  | jq '.workers[]
+      | select(.repoOwner=="YOUR_ORG" and .repoName=="YOUR_REPO")
+      | select(.name | startswith("ec2-worker-"))
+      | {name, isInUse, activeBcId, serviceAccountId}'
+```
+
+Current public API responses expose worker names, repo metadata, service account
+IDs, and usage state. They do not expose custom labels from `--labels-file`, so
+labels should not be used as the source of truth for API-side scoping.
+
+This repo's autoscaler intentionally uses local truth instead:
+
+```text
+/etc/cursor-workers/workers.json
+127.0.0.1:<managementPort>/readyz
+systemctl is-active cursor-worker-<id>.service
+```
+
+That keeps scaling scoped to this EC2 fleet even when the Cursor team has other
+self-hosted workers connected.
 
 ## Notes
 
