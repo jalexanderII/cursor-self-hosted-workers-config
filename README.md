@@ -7,3 +7,4 @@ Each top-level directory contains a complete setup for a specific deployment tar
 ## Templates
 
 - [`ec2/`](ec2/) - AWS EC2 setup
+- [`kube/`](kube/) - Kubernetes/EKS setup using Cursor's worker-set-controller

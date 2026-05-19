@@ -83,9 +83,9 @@ current_ids = set(worker_by_id)
 ready_ids = set()
 claimed_or_unready_ids = set()
 
-# Local truth is the worker management endpoint on this EC2 host. Do not use
-# The Cursor team summary API counts every self-hosted worker
-# in the team, while this script is responsible only for this instance.
+# Local truth is the worker management endpoint on this EC2 host. The Cursor
+# team summary API counts every self-hosted worker in the team, while this
+# script is responsible only for this instance.
 for worker in workers:
     worker_id = str(worker["id"])
     port = int(worker["managementPort"])

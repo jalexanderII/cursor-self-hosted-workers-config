@@ -55,14 +55,14 @@ echo "Preparing clean worker workspace: ${CURSOR_WORKER_DIR} -> origin/${BRANCH}
 
 # Optional repo-local environment file hydration.
 #
-# Strategy:
+# Design:
 # - Each AWS Secrets Manager secret stores one complete file as raw SecretString
 #   (for example an existing 300-line .env file pasted/uploaded as-is).
 # - CURSOR_REPO_ENV_FILES points to a root-owned mapping file with lines shaped:
 #     repo/relative/target secret/id/whose/SecretString/is/the/file
-# - We inject after git cleanup because `git clean -fd` removes untracked .env
+# - Inject after git cleanup because `git clean -fd` removes untracked .env
 #   files on every worker restart.
-# - We inject before `agent worker start` so claimed worker sessions see the
+# - Inject before `agent worker start` so claimed worker sessions see the
 #   files from the beginning.
 # This avoids JSON escaping/newline conversion and scales to large enterprise
 # env files without reformatting.

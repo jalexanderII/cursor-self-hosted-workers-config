@@ -1,0 +1,122 @@
+# Example Cursor WorkerDeployment for EKS/Kubernetes.
+#
+# Apply the official Cursor controller first:
+#   helm upgrade --install worker-set-controller \
+#     oci://public.ecr.aws/j6w0t2f5/cursor/worker-set-controller-chart \
+#     --namespace cursord --create-namespace \
+#     --version 0.1.0-6c804a0 \
+#     --set imageTag=6c804a0 \
+#     --set env.enableAuthManagement=true \
+#     --set rbac.singleNamespace=true
+#
+# IMPORTANT: For pod-template changes, prefer editing this file and running
+# `kubectl apply -f workers.yaml`. Avoid partial patches like
+# `containers: [{name, image}]`; for this CRD that can replace the whole
+# container spec and drop env vars, probes, volumes, and resources.
+apiVersion: workers.cursor.com/v1
+kind: WorkerDeployment
+metadata:
+  name: REPLACE_ME-workers
+  namespace: cursord
+spec:
+  # The controller reads the long-lived service account API key, exchanges it
+  # for short-lived worker tokens, and mounts the token at /var/run/cursor/token.
+  # The secret must be labeled:
+  #   workers.cursor.com/worker-deployment=REPLACE_ME-workers
+  auth:
+    apiKeySecretRef:
+      name: REPLACE_ME-workers-api-key
+      key: api-key
+    workerContainerName: worker
+
+  # This is the idle/ready floor, not a hard max. If 2 workers are busy and
+  # readyReplicas is 3, total pods can be 5 while the controller preserves 3
+  # idle workers. Node capacity must be sized for busy pods + ready floor.
+  readyReplicas: 3
+
+  template:
+    metadata:
+      labels:
+        app: REPLACE_ME-worker
+    spec:
+      containers:
+        - name: worker
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/REPLACE_ME-worker:TAG
+          imagePullPolicy: Always
+          env:
+            # Use pod name for display/workspace identity. Without this, every
+            # worker commonly appears in the Cursor UI as the basename of the
+            # clone directory, e.g. "repo".
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CURSOR_WORKER_NAME
+              value: "$(POD_NAME)"
+            - name: WORKER_DIR
+              value: "/workspace/$(POD_NAME)"
+
+            # Repo clone config.
+            - name: REPO_SLUG
+              value: OWNER/REPO
+            - name: BRANCH
+              value: main
+            - name: GITHUB_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: REPLACE_ME-github
+                  key: pat
+
+            # Cursor pool config. Pool is a reserved Cursor label set by
+            # --pool-name; do not also put pool=... in CURSOR_WORKER_LABELS.
+            - name: CURSOR_WORKER_POOL_NAME
+              value: REPLACE_ME-pool
+            - name: IDLE_RELEASE_TIMEOUT
+              value: "900"
+
+            # Optional Cursor labels. These are not Kubernetes labels. Do not
+            # set reserved labels manually: repo and pool.
+            - name: CURSOR_WORKER_LABELS
+              value: "env=eks,platform=kubernetes"
+
+            # Optional mounted-secret-file:repo-target-path mappings. Secret
+            # keys are files under /repo-env; the start script copies them into
+            # the fresh clone before registering the worker.
+            - name: REPO_ENV_MAPPINGS
+              value: "app.env:.env"
+
+          volumeMounts:
+            - name: repo-env
+              mountPath: /repo-env
+              readOnly: true
+
+          # /readyz is 200 only when connected and idle. During a claimed agent
+          # session it returns 503; the controller backfills another ready pod.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+
+          # /healthz indicates the process is alive. It is not the same as idle.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+
+          # Size this like a CI runner/devbox for the repo. If pods are Pending
+          # with "Insufficient cpu", lower readyReplicas, add nodes, or reduce
+          # requests only if the workload can tolerate it.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+
+      volumes:
+        - name: repo-env
+          secret:
+            secretName: REPLACE_ME-repo-env

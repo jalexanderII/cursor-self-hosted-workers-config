@@ -1,6 +1,6 @@
 # Cursor Self-Hosted Workers on EC2
 
-This repo contains the scripts and systemd units for running Cursor self-hosted cloud workers on a single EC2 instance.
+This template runs Cursor self-hosted pool workers on a single EC2 instance using systemd.
 
 The setup uses:
 
@@ -35,6 +35,15 @@ examples/
   workers.example.json
 ```
 
+## Design Notes
+
+- Use AWS Secrets Manager for long-lived credentials. Do not write service account keys, GitHub tokens, or repo `.env` files into git.
+- Use one Secrets Manager secret per repo-local env/config file. Store the raw file body as `SecretString`; do not convert large `.env` files to JSON.
+- Use git worktrees for concurrent workers on one EC2 host. Each worker needs an isolated working directory, while the host still shares git object storage efficiently.
+- Reset and clean each worktree before worker registration so a released worker cannot leak dirty files into the next session.
+- Use local `/readyz` endpoints for autoscaling decisions. Cursor's team summary API is useful for visibility, but it is team-wide and may include other hosts or pools.
+- Scale-down is conservative: only extra idle workers above the base floor are removed, and claimed workers are never stopped.
+
 ## Required AWS Secrets
 
 Create these secrets in the same AWS region as the EC2 instance:
@@ -51,7 +60,7 @@ cursor/self-hosted-workers/repos/YOUR_REPO/app.env
 cursor/self-hosted-workers/repos/YOUR_REPO/service-a.env
 ```
 
-Use one Secrets Manager secret per file you want to recreate in the worker checkout. Store the exact file body as the secret's raw `SecretString` / plaintext value. Do not convert large `.env` files to JSON; upload or paste them as-is.
+Use one Secrets Manager secret per file to recreate in the worker checkout. Store the exact file body as the secret's raw `SecretString` / plaintext value. Do not convert large `.env` files to JSON; upload or paste them as-is.
 
 ```bash
 aws secretsmanager create-secret \
@@ -60,7 +69,7 @@ aws secretsmanager create-secret \
   --secret-string file://app.env
 ```
 
-Then create a mapping file on the EC2 host. Each line maps a repo-relative target path to the secret id that contains the raw file body:
+Then create a mapping file on the EC2 host. Each line maps a repo-relative target path to the secret id containing the raw file body:
 
 ```text
 app/.env cursor/self-hosted-workers/repos/YOUR_REPO/app.env
