@@ -1,0 +1,11 @@
+# Optional repo-local env/config file hydration.
+#
+# Format:
+#   <repo-relative-target-path> <aws-secrets-manager-secret-id>
+#
+# Each secret's SecretString should be the raw file contents. Do not convert a
+# large .env file to JSON; upload/paste it as plaintext, then map it here.
+#
+# Examples:
+# app/.env cursor/self-hosted-workers/repos/YOUR_REPO/app.env
+# services/api/.env.production cursor/self-hosted-workers/repos/YOUR_REPO/api-production.env
