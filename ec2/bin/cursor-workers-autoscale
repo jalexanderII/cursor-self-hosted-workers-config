@@ -62,6 +62,9 @@ data = json.loads(path.read_text())
 workers = data["workers"]
 current = len(workers)
 
+# Persistent autoscaler state is intentionally tiny. We only remember when a
+# worker first became locally idle, so scale-down can require a sustained idle
+# period instead of tearing down capacity during a brief lull.
 if state_path.exists():
     try:
         state = json.loads(state_path.read_text())
@@ -80,6 +83,9 @@ current_ids = set(worker_by_id)
 ready_ids = set()
 claimed_or_unready_ids = set()
 
+# Local truth is the worker management endpoint on this EC2 host. Do not use
+# The Cursor team summary API counts every self-hosted worker
+# in the team, while this script is responsible only for this instance.
 for worker in workers:
     worker_id = str(worker["id"])
     port = int(worker["managementPort"])
@@ -95,6 +101,9 @@ for worker in workers:
     except Exception:
         body = {}
 
+    # A worker is removable only when it is connected, healthy, and unclaimed.
+    # Any claimed, disconnected, or erroring worker is treated as unavailable
+    # and has its idle timer cleared.
     if (
         body.get("connected") is True
         and body.get("claimed") is False
@@ -106,6 +115,9 @@ for worker in workers:
         claimed_or_unready_ids.add(worker_id)
         idle_since.pop(worker_id, None)
 
+# Drop idle timers for workers that no longer exist in the manifest. This keeps
+# stale state from influencing future scale-down decisions after manual edits or
+# previous autoscaler removals.
 for stale_id in list(idle_since):
     if stale_id not in current_ids:
         idle_since.pop(stale_id, None)
@@ -120,6 +132,9 @@ print(
 
 state_path.write_text(json.dumps({"idleSince": idle_since}, indent=2) + "\n")
 
+# Scale-up is fast and local: if this EC2 has fewer than the configured idle
+# buffer, append new worker slots to the manifest and let reconcile create the
+# worktrees and systemd units.
 if idle < min_idle:
     if current >= max_local_workers:
         print("max local workers reached; no scale-up", file=sys.stderr)
@@ -133,6 +148,9 @@ if idle < min_idle:
     max_id = max(existing_ids) if existing_ids else 0
     used_ports = {int(w["managementPort"]) for w in workers}
 
+    # New workers get monotonically increasing IDs and non-conflicting localhost
+    # management ports. Worker 1 is usually port 8080, so worker N starts at
+    # 8080 + N and bumps until it finds a free port.
     for _ in range(to_add):
         n = max_id + 1
         while n in existing_ids:
@@ -158,6 +176,8 @@ if idle < min_idle:
     print("reconcile")
     raise SystemExit(0)
 
+# Scale-down is deliberately conservative. We only remove capacity above the
+# configured base floor, and only while preserving the minimum idle buffer.
 extra_capacity = max(0, current - base_workers)
 removable_slots = max(0, idle - min_idle)
 if extra_capacity == 0 or removable_slots == 0:
@@ -174,6 +194,8 @@ for worker_id in ready_ids:
     if idle_age >= scale_down_idle_seconds:
         eligible_ids.append(numeric_id)
 
+# Prefer removing the highest-numbered workers first. The base workers keep
+# stable identities and ports; burst capacity is the part that comes and goes.
 eligible_ids.sort(reverse=True)
 to_remove = eligible_ids[: min(scale_down_step, extra_capacity, removable_slots)]
 if not to_remove:
@@ -191,6 +213,9 @@ data["workers"] = [w for w in workers if str(w["id"]) not in remove_set]
 for worker_id in remove_set:
     idle_since.pop(worker_id, None)
 
+# The Bash wrapper performs the destructive cleanup for removed workers after
+# this Python block exits. Python only edits the manifest and reports the action
+# to take, which keeps systemd/git-worktree side effects in one place.
 path.write_text(json.dumps(data, indent=2) + "\n")
 state_path.write_text(json.dumps({"idleSince": idle_since}, indent=2) + "\n")
 print("scale_down:" + ",".join(str(worker_id) for worker_id in to_remove))
@@ -199,9 +224,14 @@ PY
 
 case "$action" in
   reconcile)
+    # Python already appended new worker slots to the manifest. Reconcile owns
+    # the concrete side effects: creating worktrees and systemd unit files.
     /usr/local/bin/cursor-workers-reconcile
     ;;
   scale_down:*)
+    # Python already removed selected workers from the manifest. The shell
+    # wrapper owns stopping systemd units and removing git worktrees because
+    # those operational side effects are easier to audit here.
     ids="${action#scale_down:}"
     IFS=',' read -r -a id_array <<< "$ids"
     for id in "${id_array[@]}"; do
