@@ -7,7 +7,7 @@ The setup uses:
 - AWS Secrets Manager for the Cursor service account key and GitHub PAT
 - systemd for worker lifecycle management
 - git worktrees for multiple concurrent workers on one repo
-- a local scale-up-only autoscaler based on each worker's `/readyz` endpoint
+- a local autoscaler based on each worker's `/readyz` endpoint
 - CloudWatch metrics publishing for local worker health
 
 ## Layout
@@ -17,7 +17,7 @@ bin/
   git-credential-github-secretsmanager # fetches GitHub credentials from AWS Secrets Manager
   cursor-worker-start              # starts one worker and cleans its worktree first
   cursor-workers-reconcile         # creates worktrees and systemd units without restarting active workers
-  cursor-workers-autoscale         # adds workers when local idle capacity drops below threshold
+  cursor-workers-autoscale         # adds/removes workers based on local idle capacity
   cursor-workers-publish-metrics   # publishes local worker counts to CloudWatch
 
 systemd/
@@ -179,17 +179,32 @@ prior work before continuing.
 
 ## Autoscaling
 
-`cursor-workers-autoscale` scales up only. Defaults are configured in `/etc/cursor-workers/env`:
+`cursor-workers-autoscale` scales up when idle capacity is too low and scales
+down extra workers only after they have been idle long enough. Defaults are
+configured in `/etc/cursor-workers/env`:
 
 ```text
-MIN_IDLE=1
-SCALE_STEP=2
-MAX_LOCAL_WORKERS=15
+CURSOR_AUTOSCALE_MIN_IDLE=1
+CURSOR_AUTOSCALE_SCALE_STEP=2
+CURSOR_AUTOSCALE_MAX_LOCAL_WORKERS=15
+CURSOR_AUTOSCALE_BASE_WORKERS=5
+CURSOR_AUTOSCALE_SCALE_DOWN_STEP=1
+CURSOR_AUTOSCALE_SCALE_DOWN_IDLE_SECONDS=3600
+CURSOR_AUTOSCALE_STATE_FILE=/var/lib/cursor-workers/autoscale-state.json
 ```
 
-It reads `/etc/cursor-workers/workers.json`, checks each local `/readyz` endpoint, appends workers if idle capacity is too low, then calls `cursor-workers-reconcile`.
+It reads `/etc/cursor-workers/workers.json` and each local `/readyz` endpoint.
+If idle capacity is below `CURSOR_AUTOSCALE_MIN_IDLE`, it appends workers and
+calls `cursor-workers-reconcile`. If extra workers above
+`CURSOR_AUTOSCALE_BASE_WORKERS` have been idle for at least
+`CURSOR_AUTOSCALE_SCALE_DOWN_IDLE_SECONDS`, it removes at most
+`CURSOR_AUTOSCALE_SCALE_DOWN_STEP` worker per run.
 
-There is intentionally no scale-down logic.
+Scale-down only removes workers that are currently connected, unclaimed, and
+`status=ok`. It never removes workers at or below `CURSOR_AUTOSCALE_BASE_WORKERS`
+and it keeps at least `CURSOR_AUTOSCALE_MIN_IDLE` idle worker available.
+Idle age is tracked in `CURSOR_AUTOSCALE_STATE_FILE`; if a worker becomes
+claimed or unready, its idle timer is cleared.
 
 `cursor-workers-autoscale` and `cursor-workers-reconcile` both take local
 `flock` locks, so a timer run and a manual reconcile do not edit
@@ -356,4 +371,4 @@ account fleet, or external self-hosted worker pool.
 - Pool names and labels are routing/capacity metadata, not a security boundary.
 - Use separate Cursor teams, GitHub integrations, service accounts, and fleets for hard isolation between groups or customers.
 - The public private-workers API exposes worker names, repo metadata, service account IDs, and usage state. It should not be treated as an authoritative source for custom worker labels.
-- The local autoscaler intentionally scales up only. To reduce workers, manually remove extra manifest entries and stop/disable the corresponding systemd services after confirming they are idle.
+- The local autoscaler removes only extra idle workers above the configured base floor after the idle-age threshold. It never stops claimed workers.

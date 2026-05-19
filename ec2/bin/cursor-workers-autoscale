@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Scale up the local EC2 worker pool when local idle capacity is too low.
+# Scale the local EC2 worker pool.
 #
 # This intentionally uses the local manifest plus each worker's localhost
 # /readyz endpoint instead of the team-wide Cursor summary API. The summary API
@@ -15,7 +15,13 @@ MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
 MIN_IDLE="${CURSOR_AUTOSCALE_MIN_IDLE:-1}"
 SCALE_STEP="${CURSOR_AUTOSCALE_SCALE_STEP:-2}"
 MAX_LOCAL_WORKERS="${CURSOR_AUTOSCALE_MAX_LOCAL_WORKERS:-15}"
+BASE_WORKERS="${CURSOR_AUTOSCALE_BASE_WORKERS:-5}"
+SCALE_DOWN_STEP="${CURSOR_AUTOSCALE_SCALE_DOWN_STEP:-1}"
+SCALE_DOWN_IDLE_SECONDS="${CURSOR_AUTOSCALE_SCALE_DOWN_IDLE_SECONDS:-3600}"
+STATE_FILE="${CURSOR_AUTOSCALE_STATE_FILE:-/var/lib/cursor-workers/autoscale-state.json}"
 LOCK_FILE="${CURSOR_WORKERS_AUTOSCALE_LOCK:-/var/lock/cursor-workers-autoscale.lock}"
+BASE_DIR="${CURSOR_WORKERS_BASE_DIR:-/opt/cursor-workers/base}"
+WORKER_USER="${CURSOR_WORKER_USER:-ubuntu}"
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 200>"$LOCK_FILE"
@@ -24,89 +30,201 @@ if ! flock -n 200; then
   exit 0
 fi
 
-count_idle_local_workers() {
-  local idle=0
+mkdir -p "$(dirname "$STATE_FILE")"
 
-  while read -r worker; do
-    local port
-    port="$(echo "$worker" | jq -r '.managementPort')"
-
-    local body
-    body="$(curl -s --max-time 2 "http://127.0.0.1:${port}/readyz" || true)"
-
-    # A worker is usable for a new session only when it is connected, unclaimed,
-    # and reports status=ok. claimed=true means it is still reserved for an
-    # active session or the idle follow-up window.
-    if echo "$body" | jq -e '.connected == true and .claimed == false and .status == "ok"' >/dev/null 2>&1; then
-      idle=$((idle + 1))
-    fi
-  done < <(jq -c '.workers[]' "$MANIFEST")
-
-  echo "$idle"
-}
-
-current="$(jq '.workers | length' "$MANIFEST")"
-idle="$(count_idle_local_workers)"
-
-echo "local workers: current=${current} idle=${idle} minIdle=${MIN_IDLE} max=${MAX_LOCAL_WORKERS}"
-
-if [ "$idle" -ge "$MIN_IDLE" ]; then
-  echo "enough idle workers; no scale-up needed"
-  exit 0
-fi
-
-if [ "$current" -ge "$MAX_LOCAL_WORKERS" ]; then
-  echo "max local workers reached; no scale-up"
-  exit 0
-fi
-
-# Add at most SCALE_STEP workers, capped by MAX_LOCAL_WORKERS.
-to_add="$SCALE_STEP"
-if [ $((current + to_add)) -gt "$MAX_LOCAL_WORKERS" ]; then
-  to_add=$((MAX_LOCAL_WORKERS - current))
-fi
-
-echo "scaling up by ${to_add} worker(s)"
-
-# Append new worker entries to the manifest. Reconcile will create the worktrees
-# and start only the new services.
-python3 - "$MANIFEST" "$to_add" <<'PY'
+action="$(
+python3 - \
+  "$MANIFEST" \
+  "$STATE_FILE" \
+  "$MIN_IDLE" \
+  "$SCALE_STEP" \
+  "$MAX_LOCAL_WORKERS" \
+  "$BASE_WORKERS" \
+  "$SCALE_DOWN_STEP" \
+  "$SCALE_DOWN_IDLE_SECONDS" <<'PY'
 import json
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 path = Path(sys.argv[1])
-to_add = int(sys.argv[2])
+state_path = Path(sys.argv[2])
+min_idle = int(sys.argv[3])
+scale_step = int(sys.argv[4])
+max_local_workers = int(sys.argv[5])
+base_workers = int(sys.argv[6])
+scale_down_step = int(sys.argv[7])
+scale_down_idle_seconds = int(sys.argv[8])
+now = int(time.time())
 
 data = json.loads(path.read_text())
 workers = data["workers"]
+current = len(workers)
 
-existing_ids = {int(w["id"]) for w in workers}
-max_id = max(existing_ids) if existing_ids else 0
-used_ports = {int(w["managementPort"]) for w in workers}
+if state_path.exists():
+    try:
+        state = json.loads(state_path.read_text())
+    except json.JSONDecodeError:
+        state = {}
+else:
+    state = {}
 
-for _ in range(to_add):
-    n = max_id + 1
-    while n in existing_ids:
-        n += 1
+idle_since = state.get("idleSince", {})
+if not isinstance(idle_since, dict):
+    idle_since = {}
 
-    port = 8080 + n
-    while port in used_ports:
-        port += 1
+worker_by_id = {str(w["id"]): w for w in workers}
+current_ids = set(worker_by_id)
 
-    workers.append({
-        "id": str(n),
-        "name": f"ec2-worker-{n}",
-        "workerDir": f"/opt/cursor-workers/worker-{n}",
-        "managementPort": port,
-        "worktree": True
-    })
+ready_ids = set()
+claimed_or_unready_ids = set()
 
-    existing_ids.add(n)
-    used_ports.add(port)
-    max_id = n
+for worker in workers:
+    worker_id = str(worker["id"])
+    port = int(worker["managementPort"])
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "--max-time", "2", f"http://127.0.0.1:{port}/readyz"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        body = json.loads(result.stdout) if result.stdout.strip() else {}
+    except Exception:
+        body = {}
+
+    if (
+        body.get("connected") is True
+        and body.get("claimed") is False
+        and body.get("status") == "ok"
+    ):
+        ready_ids.add(worker_id)
+        idle_since.setdefault(worker_id, now)
+    else:
+        claimed_or_unready_ids.add(worker_id)
+        idle_since.pop(worker_id, None)
+
+for stale_id in list(idle_since):
+    if stale_id not in current_ids:
+        idle_since.pop(stale_id, None)
+
+idle = len(ready_ids)
+
+print(
+    f"local workers: current={current} idle={idle} minIdle={min_idle} "
+    f"base={base_workers} max={max_local_workers}",
+    file=sys.stderr,
+)
+
+state_path.write_text(json.dumps({"idleSince": idle_since}, indent=2) + "\n")
+
+if idle < min_idle:
+    if current >= max_local_workers:
+        print("max local workers reached; no scale-up", file=sys.stderr)
+        print("none")
+        raise SystemExit(0)
+
+    to_add = min(scale_step, max_local_workers - current)
+    print(f"scaling up by {to_add} worker(s)", file=sys.stderr)
+
+    existing_ids = {int(w["id"]) for w in workers}
+    max_id = max(existing_ids) if existing_ids else 0
+    used_ports = {int(w["managementPort"]) for w in workers}
+
+    for _ in range(to_add):
+        n = max_id + 1
+        while n in existing_ids:
+            n += 1
+
+        port = 8080 + n
+        while port in used_ports:
+            port += 1
+
+        workers.append({
+            "id": str(n),
+            "name": f"ec2-worker-{n}",
+            "workerDir": f"/opt/cursor-workers/worker-{n}",
+            "managementPort": port,
+            "worktree": True
+        })
+
+        existing_ids.add(n)
+        used_ports.add(port)
+        max_id = n
+
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print("reconcile")
+    raise SystemExit(0)
+
+extra_capacity = max(0, current - base_workers)
+removable_slots = max(0, idle - min_idle)
+if extra_capacity == 0 or removable_slots == 0:
+    print("enough idle workers; no scale-up needed", file=sys.stderr)
+    print("none")
+    raise SystemExit(0)
+
+eligible_ids = []
+for worker_id in ready_ids:
+    numeric_id = int(worker_id)
+    if numeric_id <= base_workers:
+        continue
+    idle_age = now - int(idle_since.get(worker_id, now))
+    if idle_age >= scale_down_idle_seconds:
+        eligible_ids.append(numeric_id)
+
+eligible_ids.sort(reverse=True)
+to_remove = eligible_ids[: min(scale_down_step, extra_capacity, removable_slots)]
+if not to_remove:
+    print("extra workers exist, but none have been idle long enough for scale-down", file=sys.stderr)
+    print("none")
+    raise SystemExit(0)
+
+print(
+    "scaling down worker(s): " + ", ".join(str(worker_id) for worker_id in to_remove),
+    file=sys.stderr,
+)
+
+remove_set = {str(worker_id) for worker_id in to_remove}
+data["workers"] = [w for w in workers if str(w["id"]) not in remove_set]
+for worker_id in remove_set:
+    idle_since.pop(worker_id, None)
 
 path.write_text(json.dumps(data, indent=2) + "\n")
+state_path.write_text(json.dumps({"idleSince": idle_since}, indent=2) + "\n")
+print("scale_down:" + ",".join(str(worker_id) for worker_id in to_remove))
 PY
+)"
 
-/usr/local/bin/cursor-workers-reconcile
+case "$action" in
+  reconcile)
+    /usr/local/bin/cursor-workers-reconcile
+    ;;
+  scale_down:*)
+    ids="${action#scale_down:}"
+    IFS=',' read -r -a id_array <<< "$ids"
+    for id in "${id_array[@]}"; do
+      service="cursor-worker-${id}.service"
+      worker_dir="/opt/cursor-workers/worker-${id}"
+
+      echo "stopping and disabling ${service}"
+      systemctl stop "$service" || true
+      systemctl disable "$service" >/dev/null || true
+      rm -f "/etc/systemd/system/${service}"
+      systemctl daemon-reload
+
+      if [ -d "$worker_dir" ]; then
+        echo "removing worktree ${worker_dir}"
+        sudo -u "$WORKER_USER" git -C "$BASE_DIR" worktree remove "$worker_dir" || rm -rf "$worker_dir"
+        sudo -u "$WORKER_USER" git -C "$BASE_DIR" worktree prune || true
+      fi
+    done
+    ;;
+  none)
+    ;;
+  *)
+    echo "unknown autoscale action: ${action}" >&2
+    exit 1
+    ;;
+esac
