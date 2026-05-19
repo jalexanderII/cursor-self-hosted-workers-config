@@ -5,6 +5,7 @@ This repo contains the scripts and systemd units for running Cursor self-hosted 
 The setup uses:
 
 - AWS Secrets Manager for the Cursor service account key and GitHub PAT
+- optional AWS Secrets Manager hydration for repo-local `.env` / config files
 - systemd for worker lifecycle management
 - git worktrees for multiple concurrent workers on one repo
 - a local autoscaler based on each worker's `/readyz` endpoint
@@ -30,6 +31,7 @@ examples/
   cursor-workers-autoscale-team-summary.example.sh
   env.example
   labels.json
+  repo-env-files.example
   workers.example.json
 ```
 
@@ -42,13 +44,50 @@ cursor/self-hosted-workers/cursor-api-key
 cursor/self-hosted-workers/github-pat
 ```
 
+Optional repo tooling secrets (API keys for services in the worker checkout, for example image generation, audio generation, private package registries, or deployment previews):
+
+```text
+cursor/self-hosted-workers/repos/YOUR_REPO/app.env
+cursor/self-hosted-workers/repos/YOUR_REPO/service-a.env
+```
+
+Use one Secrets Manager secret per file you want to recreate in the worker checkout. Store the exact file body as the secret's raw `SecretString` / plaintext value. Do not convert large `.env` files to JSON; upload or paste them as-is.
+
+```bash
+aws secretsmanager create-secret \
+  --region us-east-1 \
+  --name cursor/self-hosted-workers/repos/YOUR_REPO/app.env \
+  --secret-string file://app.env
+```
+
+Then create a mapping file on the EC2 host. Each line maps a repo-relative target path to the secret id that contains the raw file body:
+
+```text
+app/.env cursor/self-hosted-workers/repos/YOUR_REPO/app.env
+services/api/.env.production cursor/self-hosted-workers/repos/YOUR_REPO/api-production.env
+```
+
+Set `CURSOR_REPO_ENV_FILES=/etc/cursor-workers/repo-env-files` in `/etc/cursor-workers/env`. `cursor-worker-start` fetches each mapped secret after `git clean` and writes the target file into the worker worktree with mode `600`. Untracked `.env` files are removed on every worker restart, so secrets are not persisted in git; they are re-injected from Secrets Manager.
+
 The EC2 instance profile must allow:
 
 ```text
 secretsmanager:GetSecretValue
 ```
 
-for those secret ARNs.
+for those secret ARNs (and for any repo env file secrets you configure).
+
+Example IAM statement for a repo env secret:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "secretsmanager:GetSecretValue",
+  "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:cursor/self-hosted-workers/repos/YOUR_REPO/*"
+}
+```
+
+Create and rotate repo env secrets with an admin AWS principal. The EC2 role only needs read access.
 
 ## Cursor Prerequisites
 
@@ -97,9 +136,11 @@ sudo mkdir -p /etc/cursor-workers
 sudo install -m 644 examples/env.example /etc/cursor-workers/env
 sudo install -m 644 examples/labels.json /etc/cursor-workers/labels.json
 sudo install -m 644 examples/workers.example.json /etc/cursor-workers/workers.json
+# Optional, only if this repo needs env/config files hydrated from Secrets Manager:
+sudo install -m 644 examples/repo-env-files.example /etc/cursor-workers/repo-env-files
 ```
 
-Edit `/etc/cursor-workers/env` and `/etc/cursor-workers/workers.json` for the target AWS region, secret names, OS user, agent path, repo, branch, worker count, and ports.
+Edit `/etc/cursor-workers/env` and `/etc/cursor-workers/workers.json` for the target AWS region, secret names, OS user, agent path, repo, branch, worker count, and ports. If you install `/etc/cursor-workers/repo-env-files`, replace the example lines with real repo-relative target paths and secret ids before enabling `CURSOR_REPO_ENV_FILES`.
 
 Key customization values live in `/etc/cursor-workers/env`:
 
@@ -115,6 +156,8 @@ CURSOR_AGENT_BIN=/home/ubuntu/.local/bin/agent
 CURSOR_WORKERS_MANIFEST=/etc/cursor-workers/workers.json
 CURSOR_WORKERS_LABELS_FILE=/etc/cursor-workers/labels.json
 CURSOR_WORKERS_BASE_DIR=/opt/cursor-workers/base
+# Optional. Enable only after /etc/cursor-workers/repo-env-files contains real mappings.
+# CURSOR_REPO_ENV_FILES=/etc/cursor-workers/repo-env-files
 CURSOR_WORKER_CLEAN_MODE=normal
 CURSOR_AUTOSCALE_MIN_IDLE=1
 CURSOR_AUTOSCALE_SCALE_STEP=2
@@ -163,6 +206,8 @@ git clean -fd
 ```
 
 That ensures the next session starts from the latest remote branch after the previous session releases and systemd restarts the worker.
+
+If `CURSOR_REPO_ENV_FILES` is set, `cursor-worker-start` then writes repo-local env/config files from Secrets Manager into the worktree (see **Required AWS Secrets** above). This happens after cleanup and before the worker registers, so each new claimed session sees the hydrated files from the start.
 
 Additional workers use git worktrees created from the base checkout. Those
 worktrees start from `origin/<branch>` and may initially be detached at that

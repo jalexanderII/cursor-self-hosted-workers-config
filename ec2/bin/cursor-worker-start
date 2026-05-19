@@ -53,6 +53,68 @@ echo "Preparing clean worker workspace: ${CURSOR_WORKER_DIR} -> origin/${BRANCH}
   esac
 ) 200>"$LOCK_FILE"
 
+# Optional repo-local environment file hydration.
+#
+# Strategy:
+# - Each AWS Secrets Manager secret stores one complete file as raw SecretString
+#   (for example an existing 300-line .env file pasted/uploaded as-is).
+# - CURSOR_REPO_ENV_FILES points to a root-owned mapping file with lines shaped:
+#     repo/relative/target secret/id/whose/SecretString/is/the/file
+# - We inject after git cleanup because `git clean -fd` removes untracked .env
+#   files on every worker restart.
+# - We inject before `agent worker start` so claimed worker sessions see the
+#   files from the beginning.
+# This avoids JSON escaping/newline conversion and scales to large enterprise
+# env files without reformatting.
+inject_repo_env_files() {
+  local mapping_file="${CURSOR_REPO_ENV_FILES:-}"
+  if [ -z "$mapping_file" ]; then
+    return 0
+  fi
+
+  if [ ! -f "$mapping_file" ]; then
+    echo "CURSOR_REPO_ENV_FILES points to missing file: ${mapping_file}" >&2
+    exit 1
+  fi
+
+  echo "Injecting repo env files from ${mapping_file}"
+
+  local target_rel secret_id extra target_dir target
+  while read -r target_rel secret_id extra; do
+    if [ -z "${target_rel:-}" ] || [[ "$target_rel" == \#* ]]; then
+      continue
+    fi
+    if [ -z "${secret_id:-}" ]; then
+      echo "Missing secret id for repo env target: ${target_rel}" >&2
+      exit 1
+    fi
+    if [ -n "${extra:-}" ]; then
+      echo "Invalid repo env mapping line for ${target_rel}: expected exactly two fields" >&2
+      exit 1
+    fi
+    if [[ "$target_rel" == /* ]] || [[ "$target_rel" == *".."* ]] || [[ "$target_rel" == */ ]]; then
+      echo "Invalid repo env target path: ${target_rel}" >&2
+      exit 1
+    fi
+
+    target="${CURSOR_WORKER_DIR}/${target_rel}"
+    target_dir="$(dirname "$target")"
+    mkdir -p "$target_dir"
+    if ! aws secretsmanager get-secret-value \
+      --region "$AWS_REGION" \
+      --secret-id "$secret_id" \
+      --query SecretString \
+      --output text >"$target"; then
+      rm -f "$target"
+      echo "Failed to fetch repo env secret for ${target_rel}: ${secret_id}" >&2
+      exit 1
+    fi
+    chmod 600 "$target"
+  done < "$mapping_file"
+}
+
+inject_repo_env_files
+
 # Fetch the service account API key at process start. The key is never written
 # to disk by this script.
 CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
