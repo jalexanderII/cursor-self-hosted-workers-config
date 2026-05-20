@@ -6,6 +6,7 @@ set -euo pipefail
 # Metrics are derived from this instance's manifest and localhost /readyz
 # endpoints, so they represent this EC2 fleet rather than the whole Cursor team.
 set -a
+# shellcheck source=/dev/null
 . /etc/cursor-workers/env
 set +a
 

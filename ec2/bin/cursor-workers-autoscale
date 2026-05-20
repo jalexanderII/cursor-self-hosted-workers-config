@@ -8,6 +8,7 @@ set -euo pipefail
 # counts all workers in the Cursor team, while this scaler should only manage
 # workers on this instance.
 set -a
+# shellcheck source=/dev/null
 . /etc/cursor-workers/env
 set +a
 

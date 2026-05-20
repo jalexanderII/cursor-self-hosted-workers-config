@@ -13,6 +13,7 @@ set -euo pipefail
 
 # Shared deployment configuration and secret IDs live here.
 set -a
+# shellcheck source=/dev/null
 . /etc/cursor-workers/env
 set +a
 

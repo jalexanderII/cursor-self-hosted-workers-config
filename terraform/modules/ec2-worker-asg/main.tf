@@ -273,20 +273,20 @@ locals {
   ]))
 
   user_data = templatefile("${path.module}/../../templates/ec2-user-data.sh.tftpl", {
-    worker_user                         = var.worker_user
-    git_credential_helper_b64           = base64encode(file("${path.module}/../../../ec2/bin/git-credential-github-secretsmanager"))
-    cursor_worker_start_b64             = base64encode(file("${path.module}/../../../ec2/bin/cursor-worker-start"))
-    cursor_workers_reconcile_b64        = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-reconcile"))
-    cursor_workers_autoscale_b64        = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-autoscale"))
-    cursor_workers_publish_metrics_b64  = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-publish-metrics"))
-    autoscale_service_b64               = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.service"))
-    autoscale_timer_b64                 = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.timer"))
-    metrics_service_b64                 = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.service"))
-    metrics_timer_b64                   = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.timer"))
-    env_file_b64                        = base64encode(local.env_file)
-    labels_json_b64                     = base64encode(var.labels_json)
-    workers_json_b64                    = base64encode(local.workers_json)
-    repo_env_files_b64                  = var.repo_env_mappings == "" ? "" : base64encode(var.repo_env_mappings)
+    worker_user                        = var.worker_user
+    git_credential_helper_b64          = base64encode(file("${path.module}/../../../ec2/bin/git-credential-github-secretsmanager"))
+    cursor_worker_start_b64            = base64encode(file("${path.module}/../../../ec2/bin/cursor-worker-start"))
+    cursor_workers_reconcile_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-reconcile"))
+    cursor_workers_autoscale_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-autoscale"))
+    cursor_workers_publish_metrics_b64 = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-publish-metrics"))
+    autoscale_service_b64              = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.service"))
+    autoscale_timer_b64                = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.timer"))
+    metrics_service_b64                = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.service"))
+    metrics_timer_b64                  = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.timer"))
+    env_file_b64                       = base64encode(local.env_file)
+    labels_json_b64                    = base64encode(var.labels_json)
+    workers_json_b64                   = base64encode(local.workers_json)
+    repo_env_files_b64                 = var.repo_env_mappings == "" ? "" : base64encode(var.repo_env_mappings)
   })
 
   secret_arns = concat(

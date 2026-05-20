@@ -241,24 +241,24 @@ locals {
   ])
 
   worker_manifest = templatefile("${path.module}/../../../kube/manifests/workers.tpl.yaml", {
-    worker_deployment_name  = var.worker_deployment_name
-    namespace               = var.k8s_namespace
+    worker_deployment_name     = var.worker_deployment_name
+    namespace                  = var.k8s_namespace
     cursor_api_key_secret_name = var.cursor_api_key_secret_name
-    ready_replicas          = var.worker_ready_replicas
-    app_label               = var.worker_deployment_name
-    worker_image            = local.worker_image
-    repo_slug               = jsonencode(var.repo_slug)
-    repo_branch             = jsonencode(var.repo_branch)
-    github_pat_secret_name  = var.github_pat_secret_name_k8s
-    worker_pool_name        = jsonencode(var.worker_pool_name)
-    idle_release_timeout    = var.worker_idle_release_timeout
-    worker_labels_csv       = jsonencode(local.worker_labels_csv)
-    repo_env_mappings       = var.repo_env_mappings == "" ? "" : jsonencode(var.repo_env_mappings)
-    repo_env_secret_name    = var.repo_env_secret_name_k8s
-    request_cpu             = jsonencode(var.request_cpu)
-    request_memory          = jsonencode(var.request_memory)
-    limit_cpu               = jsonencode(var.limit_cpu)
-    limit_memory            = jsonencode(var.limit_memory)
+    ready_replicas             = var.worker_ready_replicas
+    app_label                  = var.worker_deployment_name
+    worker_image               = local.worker_image
+    repo_slug                  = jsonencode(var.repo_slug)
+    repo_branch                = jsonencode(var.repo_branch)
+    github_pat_secret_name     = var.github_pat_secret_name_k8s
+    worker_pool_name           = jsonencode(var.worker_pool_name)
+    idle_release_timeout       = var.worker_idle_release_timeout
+    worker_labels_csv          = jsonencode(local.worker_labels_csv)
+    repo_env_mappings          = var.repo_env_mappings == "" ? "" : jsonencode(var.repo_env_mappings)
+    repo_env_secret_name       = var.repo_env_secret_name_k8s
+    request_cpu                = jsonencode(var.request_cpu)
+    request_memory             = jsonencode(var.request_memory)
+    limit_cpu                  = jsonencode(var.limit_cpu)
+    limit_memory               = jsonencode(var.limit_memory)
   })
 }
 
