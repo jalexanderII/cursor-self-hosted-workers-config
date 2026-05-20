@@ -162,7 +162,7 @@ if idle < min_idle:
 
         workers.append({
             "id": str(n),
-            "name": f"ec2-worker-{n}",
+            "name": f"ec2-{{INSTANCE_ID}}-worker-{n}",
             "workerDir": f"/opt/cursor-workers/worker-{n}",
             "managementPort": port,
             "worktree": True

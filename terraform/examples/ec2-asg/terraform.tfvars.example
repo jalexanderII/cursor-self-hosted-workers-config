@@ -1,0 +1,29 @@
+aws_region      = "us-east-1"
+deployment_name = "cursor-workers"
+environment     = "prod"
+
+# Prefer private subnets with NAT egress. Leave null/empty only for a quick
+# first pass in an account that still has a default VPC.
+vpc_id     = "vpc-REPLACE_ME"
+subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B", "subnet-REPLACE_ME_C"]
+
+repo_slug        = "YOUR_ORG/YOUR_REPO"
+repo_branch      = "main"
+worker_pool_name = "prod-ec2"
+
+cursor_api_secret_name = "cursor/self-hosted-workers/cursor-api-key"
+github_pat_secret_name = "cursor/self-hosted-workers/github-pat"
+
+ec2_instance_type             = "m6i.xlarge"
+ec2_asg_min_size              = 1
+ec2_asg_desired_capacity      = 2
+ec2_asg_max_size              = 6
+ec2_worker_slots_per_instance = 5
+ec2_max_local_workers         = 15
+
+labels_json = <<JSON
+{
+  "env": "prod",
+  "platform": "ec2"
+}
+JSON

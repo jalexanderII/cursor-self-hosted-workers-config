@@ -4,6 +4,16 @@ This template deploys Cursor self-hosted pool workers on Kubernetes using Cursor
 
 Official docs: https://cursor.com/docs/cloud-agent/self-hosted-k8s
 
+For repeatable production deployment, prefer the Terraform-backed runbooks:
+
+- [`../docs/aws-eks-new-cluster.md`](../docs/aws-eks-new-cluster.md) when this
+  repo should create a baseline EKS cluster.
+- [`../docs/aws-eks-existing-cluster.md`](../docs/aws-eks-existing-cluster.md)
+  when you already have an EKS cluster.
+
+The manual steps below remain useful for debugging and for understanding the
+worker image and `WorkerDeployment` shape that Terraform renders.
+
 ## Overview
 
 - Installs Cursor's Kubernetes controller with Helm.

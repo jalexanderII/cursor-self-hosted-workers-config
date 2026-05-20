@@ -16,6 +16,14 @@ BASE_DIR="${CURSOR_WORKERS_BASE_DIR:-/opt/cursor-workers/base}"
 WORKER_USER="${CURSOR_WORKER_USER:-ubuntu}"
 GITHUB_HOST="${GITHUB_HOST:-github.com}"
 LOCK_FILE="${CURSOR_WORKERS_RECONCILE_LOCK:-/var/lock/cursor-workers-reconcile.lock}"
+HOSTNAME_VALUE="$(hostname)"
+INSTANCE_ID="$HOSTNAME_VALUE"
+
+if token="$(curl -s --max-time 2 -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)"; then
+  INSTANCE_ID="$(curl -s --max-time 2 -H "X-aws-ec2-metadata-token: $token" \
+    "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null || echo "$HOSTNAME_VALUE")"
+fi
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 200>"$LOCK_FILE"
@@ -49,6 +57,9 @@ while read -r worker; do
   dir="$(echo "$worker" | jq -r '.workerDir')"
   port="$(echo "$worker" | jq -r '.managementPort')"
   worktree="$(echo "$worker" | jq -r '.worktree')"
+
+  name="${name//\{INSTANCE_ID\}/$INSTANCE_ID}"
+  name="${name//\{HOSTNAME\}/$HOSTNAME_VALUE}"
 
   # Worktree entries are additional isolated working directories for the same
   # repo. The base worker uses the original clone and has worktree=false.

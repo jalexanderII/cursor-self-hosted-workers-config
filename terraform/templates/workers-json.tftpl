@@ -1,0 +1,15 @@
+{
+  "repo": "${repo_slug}",
+  "branch": "${repo_branch}",
+  "workers": [
+%{ for index, worker in workers ~}
+    {
+      "id": "${worker.id}",
+      "name": "${worker.name}",
+      "workerDir": "${worker.worker_dir}",
+      "managementPort": ${worker.management_port},
+      "worktree": ${worker.worktree}
+    }%{ if index < length(workers) - 1 },%{ endif }
+%{ endfor ~}
+  ]
+}

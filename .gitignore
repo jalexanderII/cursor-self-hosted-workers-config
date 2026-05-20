@@ -21,3 +21,21 @@
 tmp/
 dist/
 build/
+
+# Terraform local state and plans
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
+
+# Rendered deployment artifacts
+terraform/examples/**/rendered/
+rendered/
+workers.yaml

@@ -1,6 +1,11 @@
 # Cursor Self-Hosted Workers on EC2
 
-This template runs Cursor self-hosted pool workers on a single EC2 instance using systemd.
+This template runs Cursor self-hosted pool workers on EC2 using systemd.
+
+For repeatable production deployment, prefer the Terraform Auto Scaling Group
+path in [`../docs/aws-ec2-asg.md`](../docs/aws-ec2-asg.md). The manual install
+steps below are still useful for debugging, custom AMIs, and understanding the
+runtime scripts that Terraform installs.
 
 The setup uses:
 
@@ -10,6 +15,24 @@ The setup uses:
 - git worktrees for multiple concurrent workers on one repo
 - a local autoscaler based on each worker's `/readyz` endpoint
 - CloudWatch metrics publishing for local worker health
+
+## Production Terraform Path
+
+The production path wraps these same scripts in an EC2 Launch Template and Auto
+Scaling Group:
+
+```bash
+cp .env.example .env
+make ec2-init
+make ec2-plan
+make ec2-apply
+CURSOR_API_KEY=... make put-secret-cursor-api-key
+GITHUB_PAT=... make put-secret-github-pat
+```
+
+Terraform creates the secret containers, IAM instance profile, no-inbound
+security group, encrypted Launch Template, ASG, and CloudWatch dashboard. It
+does not store secret values in Terraform state.
 
 ## Layout
 

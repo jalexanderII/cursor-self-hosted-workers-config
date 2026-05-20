@@ -1,0 +1,78 @@
+apiVersion: workers.cursor.com/v1
+kind: WorkerDeployment
+metadata:
+  name: ${worker_deployment_name}
+  namespace: ${namespace}
+spec:
+  auth:
+    apiKeySecretRef:
+      name: ${cursor_api_key_secret_name}
+      key: api-key
+    workerContainerName: worker
+  readyReplicas: ${ready_replicas}
+  template:
+    metadata:
+      labels:
+        app: ${app_label}
+    spec:
+      containers:
+        - name: worker
+          image: ${worker_image}
+          imagePullPolicy: Always
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CURSOR_WORKER_NAME
+              value: "$(POD_NAME)"
+            - name: WORKER_DIR
+              value: "/workspace/$(POD_NAME)"
+            - name: REPO_SLUG
+              value: ${repo_slug}
+            - name: BRANCH
+              value: ${repo_branch}
+            - name: GITHUB_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: ${github_pat_secret_name}
+                  key: pat
+            - name: CURSOR_WORKER_POOL_NAME
+              value: ${worker_pool_name}
+            - name: IDLE_RELEASE_TIMEOUT
+              value: "${idle_release_timeout}"
+            - name: CURSOR_WORKER_LABELS
+              value: ${worker_labels_csv}
+%{ if repo_env_mappings != "" ~}
+            - name: REPO_ENV_MAPPINGS
+              value: ${repo_env_mappings}
+%{ endif ~}
+%{ if repo_env_secret_name != "" ~}
+          volumeMounts:
+            - name: repo-env
+              mountPath: /repo-env
+              readOnly: true
+%{ endif ~}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: ${request_cpu}
+              memory: ${request_memory}
+            limits:
+              cpu: ${limit_cpu}
+              memory: ${limit_memory}
+%{ if repo_env_secret_name != "" ~}
+      volumes:
+        - name: repo-env
+          secret:
+            secretName: ${repo_env_secret_name}
+%{ endif ~}

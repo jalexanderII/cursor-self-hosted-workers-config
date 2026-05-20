@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_FILE="/var/log/cursor-workers-bootstrap.log"
+exec > >(tee -a "$${LOG_FILE}") 2>&1
+
+echo "Starting Cursor worker bootstrap at $(date -Is)"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y awscli ca-certificates curl git jq python3 sudo unzip
+
+if ! id "${worker_user}" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "${worker_user}"
+fi
+
+install -d -m 0755 /etc/cursor-workers
+install -d -m 0755 /usr/local/bin
+install -d -m 0755 /var/lib/cursor-workers
+install -d -m 0755 /opt/cursor-workers
+chown -R "${worker_user}:${worker_user}" /opt/cursor-workers
+
+write_b64_file() {
+  local mode="$1"
+  local owner="$2"
+  local target="$3"
+  local encoded="$4"
+  tmp="$(mktemp)"
+  printf '%s' "$encoded" | base64 -d > "$tmp"
+  install -m "$mode" -o "$owner" -g "$owner" "$tmp" "$target"
+  rm -f "$tmp"
+}
+
+write_b64_file 0755 root /usr/local/bin/git-credential-github-secretsmanager "${git_credential_helper_b64}"
+write_b64_file 0755 root /usr/local/bin/cursor-worker-start "${cursor_worker_start_b64}"
+write_b64_file 0755 root /usr/local/bin/cursor-workers-reconcile "${cursor_workers_reconcile_b64}"
+write_b64_file 0755 root /usr/local/bin/cursor-workers-autoscale "${cursor_workers_autoscale_b64}"
+write_b64_file 0755 root /usr/local/bin/cursor-workers-publish-metrics "${cursor_workers_publish_metrics_b64}"
+
+write_b64_file 0644 root /etc/systemd/system/cursor-workers-autoscale.service "${autoscale_service_b64}"
+write_b64_file 0644 root /etc/systemd/system/cursor-workers-autoscale.timer "${autoscale_timer_b64}"
+write_b64_file 0644 root /etc/systemd/system/cursor-workers-metrics.service "${metrics_service_b64}"
+write_b64_file 0644 root /etc/systemd/system/cursor-workers-metrics.timer "${metrics_timer_b64}"
+
+write_b64_file 0644 root /etc/cursor-workers/env "${env_file_b64}"
+write_b64_file 0644 root /etc/cursor-workers/labels.json "${labels_json_b64}"
+write_b64_file 0644 root /etc/cursor-workers/workers.json "${workers_json_b64}"
+
+%{ if repo_env_files_b64 != "" ~}
+write_b64_file 0644 root /etc/cursor-workers/repo-env-files "${repo_env_files_b64}"
+%{ endif ~}
+
+sudo -u "${worker_user}" git config --global credential.helper /usr/local/bin/git-credential-github-secretsmanager
+rm -f "/home/${worker_user}/.git-credentials"
+
+if ! sudo -u "${worker_user}" bash -lc 'command -v agent >/dev/null 2>&1'; then
+  sudo -u "${worker_user}" bash -lc 'curl -fsSL "https://www.cursor.com/install?channel=lab" | bash'
+fi
+
+set -a
+. /etc/cursor-workers/env
+set +a
+
+for secret_id in "$CURSOR_API_SECRET_ID" "$GITHUB_PAT_SECRET_ID"; do
+  secret_ready=0
+  for attempt in {1..120}; do
+    if aws secretsmanager get-secret-value \
+      --region "$AWS_REGION" \
+      --secret-id "$secret_id" \
+      --query SecretString \
+      --output text >/dev/null 2>&1; then
+      secret_ready=1
+      break
+    fi
+
+    echo "Waiting for secret value $secret_id, attempt $${attempt}/120"
+    sleep 10
+  done
+  if [[ "$secret_ready" != "1" ]]; then
+    echo "Secret value $secret_id was not available after waiting." >&2
+    exit 1
+  fi
+done
+
+systemctl daemon-reload
+systemctl enable --now cursor-workers-autoscale.timer
+systemctl enable --now cursor-workers-metrics.timer
+
+/usr/local/bin/cursor-workers-reconcile
+
+echo "Cursor worker bootstrap complete at $(date -Is)"

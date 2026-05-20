@@ -1,0 +1,27 @@
+aws_region      = "us-east-1"
+deployment_name = "cursor-workers"
+environment     = "prod"
+
+kubeconfig_path = "~/.kube/config"
+kube_context    = "arn:aws:eks:us-east-1:ACCOUNT_ID:cluster/cursor-workers"
+
+ecr_repository_name = "cursor-self-hosted-worker"
+worker_image_tag    = "latest"
+
+cursor_api_secret_name = "cursor/self-hosted-workers/cursor-api-key"
+github_pat_secret_name = "cursor/self-hosted-workers/github-pat"
+
+k8s_namespace             = "cursord"
+worker_deployment_name   = "cursor-workers"
+cursor_api_key_secret_name = "cursor-workers-api-key"
+github_pat_secret_name_k8s = "cursor-workers-github"
+
+repo_slug             = "YOUR_ORG/YOUR_REPO"
+repo_branch           = "main"
+worker_pool_name      = "prod-eks"
+worker_ready_replicas = 3
+
+worker_labels = {
+  env      = "prod"
+  platform = "kubernetes"
+}
