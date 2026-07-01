@@ -50,8 +50,6 @@ DR guidance. It does not implement ECS/Fargate.
 - Private network access to the EKS API when using the production private-only
   cluster profile
 
-Use `mise install` and `mise lint` for the repository's validation toolchain.
-
 ## Secret handling
 
 Do not put secret values in `.env`, Terraform variables, command arguments, or
@@ -142,10 +140,8 @@ They do not provide:
 - [`docs/finops.md`](docs/finops.md)
 - [`docs/disaster-recovery.md`](docs/disaster-recovery.md)
 - [`docs/version-maintenance.md`](docs/version-maintenance.md)
-- [`docs/migration-v2.md`](docs/migration-v2.md)
+- [`docs/upgrading-existing-deployments.md`](docs/upgrading-existing-deployments.md)
 - [`docs/operations.md`](docs/operations.md)
-- [`docs/production-checklist.md`](docs/production-checklist.md)
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local validation and change
-requirements. No license is granted by this repository unless a license file is
-added by its owner.
+No license is granted by this repository unless a license file is added by its
+owner.

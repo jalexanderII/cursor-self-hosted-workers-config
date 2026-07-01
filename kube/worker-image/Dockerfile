@@ -40,7 +40,7 @@ RUN useradd -m -u 10001 worker && \
 
 USER worker
 ENV HOME=/home/worker
-ENV PATH=/home/worker/.local/share/mise/shims:/home/worker/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/home/worker/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Cursor's official installer is the supported distribution mechanism. Keep the
 # URL overridable so regulated environments can mirror the installer internally.

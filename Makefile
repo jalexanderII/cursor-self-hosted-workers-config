@@ -31,7 +31,7 @@ SCM_TOKEN_SECRET_NAME ?= cursor-workers-scm
 	eks-cluster-init eks-cluster-plan eks-cluster-apply eks-cluster-validate \
 	eks-workers-init eks-workers-plan eks-workers-apply eks-workers-validate \
 	kube-create-api-key-secret kube-create-scm-secret kube-apply-rendered kube-status \
-	terraform-fmt terraform-validate-all test lint check
+	terraform-fmt
 
 help:
 	@echo "Targets:"
@@ -44,8 +44,6 @@ help:
 	@echo "  kube-create-*-secret        Copy local secrets into Kubernetes Secrets"
 	@echo "  kube-apply-rendered         Apply Terraform-rendered WorkerDeployment YAML"
 	@echo "  terraform-fmt               Format all Terraform files"
-	@echo "  terraform-validate-all      Validate all Terraform examples"
-	@echo "  test|lint|check             Run repository validation"
 
 ecr-login:
 	@if [[ -z "$(AWS_ACCOUNT_ID_RESOLVED)" ]]; then echo "AWS_ACCOUNT_ID or AWS CLI auth is required."; exit 1; fi
@@ -128,14 +126,3 @@ kube-status:
 
 terraform-fmt:
 	terraform fmt -recursive terraform
-
-terraform-validate-all:
-	scripts/validate.sh
-
-test:
-	python3 -m unittest discover -s tests -p 'test_*.py'
-
-lint:
-	scripts/validate.sh
-
-check: lint

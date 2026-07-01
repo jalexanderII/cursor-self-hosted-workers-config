@@ -177,5 +177,4 @@ For EC2, drain all hosts before reducing the ASG or destroying the stack. For
 EKS, set `readyReplicas: 0` and wait for active sessions to finish before
 deleting the WorkerDeployment.
 
-See [`disaster-recovery.md`](disaster-recovery.md) for recovery testing and
-[`production-checklist.md`](production-checklist.md) for go-live criteria.
+See [`disaster-recovery.md`](disaster-recovery.md) for recovery testing.
