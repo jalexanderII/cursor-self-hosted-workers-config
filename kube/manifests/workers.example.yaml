@@ -38,11 +38,46 @@ spec:
     metadata:
       labels:
         app: REPLACE_ME-worker
+        app.kubernetes.io/name: cursor-self-hosted-worker
+        app.kubernetes.io/instance: REPLACE_ME-workers
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: cursor-self-hosted-cloud-agents
+        environment: production
+        cost-center: REPLACE_ME
     spec:
+      serviceAccountName: cursor-worker
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: REPLACE_ME-worker
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: REPLACE_ME-worker
       containers:
         - name: worker
           image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/REPLACE_ME-worker:TAG
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             # Use pod name for display/workspace identity. Without this, every
             # worker commonly appears in the Cursor UI as the basename of the
@@ -57,15 +92,14 @@ spec:
               value: "/workspace/$(POD_NAME)"
 
             # Repo clone config.
-            - name: REPO_SLUG
-              value: OWNER/REPO
+            - name: REPO_URL
+              value: https://github.com/OWNER/REPO.git
             - name: BRANCH
               value: main
-            - name: GITHUB_PAT
-              valueFrom:
-                secretKeyRef:
-                  name: REPLACE_ME-github
-                  key: pat
+            - name: SCM_USERNAME
+              value: x-access-token
+            - name: SCM_TOKEN_FILE
+              value: /var/run/scm/token
 
             # Cursor pool config. Pool is a reserved Cursor label set by
             # --pool-name; do not also put pool=... in CURSOR_WORKER_LABELS.
@@ -86,9 +120,23 @@ spec:
               value: "app.env:.env"
 
           volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+            - name: scm-token
+              mountPath: /var/run/scm
+              readOnly: true
             - name: repo-env
               mountPath: /repo-env
               readOnly: true
+
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            failureThreshold: 60
+            periodSeconds: 5
 
           # /readyz is 200 only when connected and idle. During a claimed agent
           # session it returns 503; the controller backfills another ready pod.
@@ -112,11 +160,26 @@ spec:
             requests:
               cpu: "1"
               memory: 2Gi
+              ephemeral-storage: 10Gi
             limits:
               cpu: "4"
               memory: 8Gi
+              ephemeral-storage: 100Gi
 
       volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 80Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: scm-token
+          secret:
+            secretName: REPLACE_ME-scm
+            items:
+              - key: token
+                path: token
+                mode: 0440
         - name: repo-env
           secret:
             secretName: REPLACE_ME-repo-env

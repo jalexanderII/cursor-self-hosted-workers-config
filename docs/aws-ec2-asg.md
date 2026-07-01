@@ -16,14 +16,14 @@ scheduling, Kubernetes-native rollouts, or existing cluster observability.
 
 - Cursor Enterprise with Self-Hosted Cloud Agents enabled.
 - A Cursor service account API key for pool workers.
-- A GitHub PAT with access to the target repo.
+- An HTTPS SCM token with least-privilege access to the target repo.
 - AWS credentials with EC2, IAM, Auto Scaling, CloudWatch, SSM, and Secrets
   Manager permissions.
 - Private subnets with NAT egress, or public subnets if that is your accepted
   network model.
 
-Workers need outbound HTTPS to Cursor, GitHub, package registries, AWS APIs, and
-any internal services your repo tooling calls.
+Workers need the exact Cursor and workload destinations listed in
+[`networking.md`](networking.md).
 
 ## Configure
 
@@ -41,12 +41,14 @@ REPO_SLUG=YOUR_ORG/YOUR_REPO
 REPO_BRANCH=main
 CURSOR_WORKER_POOL_NAME=prod-ec2
 EC2_INSTANCE_TYPE=m6i.xlarge
+TF_VAR_ec2_ami_id=ami-REVIEWED_UBUNTU_2404
 EC2_ASG_DESIRED_CAPACITY=2
-EC2_WORKER_SLOTS_PER_INSTANCE=5
+EC2_WORKER_SLOTS_PER_INSTANCE=1
 ```
 
-For production networking, either set `TF_VAR_vpc_id` and `TF_VAR_subnet_ids` in
-`.env`, or copy [`../terraform/examples/ec2-asg/terraform.tfvars.example`](../terraform/examples/ec2-asg/terraform.tfvars.example)
+Production requires a reviewed AMI ID, explicit VPC, and at least two private
+subnets. Copy
+[`../terraform/examples/ec2-asg/terraform.tfvars.example`](../terraform/examples/ec2-asg/terraform.tfvars.example)
 to `terraform/examples/ec2-asg/terraform.tfvars` and edit it.
 
 ## Deploy
@@ -69,8 +71,12 @@ after the first apply:
 
 ```bash
 CURSOR_API_KEY=... make put-secret-cursor-api-key
-GITHUB_PAT=... make put-secret-github-pat
+SCM_TOKEN=... make put-secret-scm-token
 ```
+
+To use enterprise-managed secret containers, set
+`manage_aws_secret_containers = false` and provide the existing Cursor, SCM, and
+repo-environment secret ARNs. The EC2 role remains scoped to only those ARNs.
 
 New instances launched after the secret values exist will bootstrap cleanly. If
 instances launched before secrets were populated, terminate them from the ASG or
@@ -115,13 +121,13 @@ ec2_asg_max_size         = 9
 Change per-host capacity with:
 
 ```hcl
-ec2_worker_slots_per_instance = 5
-ec2_max_local_workers         = 20
+ec2_worker_slots_per_instance = 1
+ec2_max_local_workers         = 1
 ```
 
-Each Cursor worker takes one active job. Capacity planning should account for
-`desired_instances * local_idle_floor` plus burst workers created by the local
-autoscaler.
+Each Cursor worker takes one active job. One worker per host is the secure
+default. Multi-slot density mode is only for mutually trusted workloads because
+workers share a kernel, instance profile, Linux user, and git object database.
 
 ## Roll out script changes
 
@@ -133,7 +139,20 @@ make ec2-plan
 make ec2-apply
 ```
 
-Then start an ASG instance refresh if Terraform did not already trigger one.
+Terraform does not automatically refresh protected worker hosts. Drain each host
+with `/usr/local/bin/cursor-workers-drain`, then start the ASG instance refresh.
+
+## Safe scale-in
+
+Instances are protected from ASG scale-in. Before capacity reduction or
+replacement, run the drain command through SSM:
+
+```bash
+sudo /usr/local/bin/cursor-workers-drain
+```
+
+It waits for workers to become idle, stops them, and removes protection. A
+timeout leaves protection enabled.
 
 ## Repo env/config files
 
@@ -155,8 +174,8 @@ The worker injects those files after `git clean` and before registration.
 
 ## Cleanup
 
-Destroying this example removes the ASG, IAM, security group, dashboard, and
-secret containers:
+Drain all hosts first. Destroying this example removes the ASG, IAM, security
+group, dashboard, and secret containers:
 
 ```bash
 terraform -chdir=terraform/examples/ec2-asg destroy

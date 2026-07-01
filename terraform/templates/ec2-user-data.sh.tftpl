@@ -8,11 +8,12 @@ echo "Starting Cursor worker bootstrap at $(date -Is)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y awscli ca-certificates curl git jq python3 sudo unzip
+apt-get install -y --no-install-recommends awscli ca-certificates curl git jq python3 sudo unzip
 
 if ! id "${worker_user}" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "${worker_user}"
 fi
+worker_group="$(id -gn "${worker_user}")"
 
 install -d -m 0755 /etc/cursor-workers
 install -d -m 0755 /usr/local/bin
@@ -35,6 +36,7 @@ write_b64_file 0755 root /usr/local/bin/git-credential-github-secretsmanager "${
 write_b64_file 0755 root /usr/local/bin/cursor-worker-start "${cursor_worker_start_b64}"
 write_b64_file 0755 root /usr/local/bin/cursor-workers-reconcile "${cursor_workers_reconcile_b64}"
 write_b64_file 0755 root /usr/local/bin/cursor-workers-autoscale "${cursor_workers_autoscale_b64}"
+write_b64_file 0755 root /usr/local/bin/cursor-workers-drain "${cursor_workers_drain_b64}"
 write_b64_file 0755 root /usr/local/bin/cursor-workers-publish-metrics "${cursor_workers_publish_metrics_b64}"
 
 write_b64_file 0644 root /etc/systemd/system/cursor-workers-autoscale.service "${autoscale_service_b64}"
@@ -42,26 +44,28 @@ write_b64_file 0644 root /etc/systemd/system/cursor-workers-autoscale.timer "${a
 write_b64_file 0644 root /etc/systemd/system/cursor-workers-metrics.service "${metrics_service_b64}"
 write_b64_file 0644 root /etc/systemd/system/cursor-workers-metrics.timer "${metrics_timer_b64}"
 
-write_b64_file 0644 root /etc/cursor-workers/env "${env_file_b64}"
-write_b64_file 0644 root /etc/cursor-workers/labels.json "${labels_json_b64}"
-write_b64_file 0644 root /etc/cursor-workers/workers.json "${workers_json_b64}"
+write_b64_file 0640 root /etc/cursor-workers/env "${env_file_b64}"
+write_b64_file 0640 root /etc/cursor-workers/labels.json "${labels_json_b64}"
+write_b64_file 0640 root /etc/cursor-workers/workers.json "${workers_json_b64}"
+chgrp "$worker_group" /etc/cursor-workers/env /etc/cursor-workers/labels.json /etc/cursor-workers/workers.json
 
 %{ if repo_env_files_b64 != "" ~}
-write_b64_file 0644 root /etc/cursor-workers/repo-env-files "${repo_env_files_b64}"
+write_b64_file 0640 root /etc/cursor-workers/repo-env-files "${repo_env_files_b64}"
+chgrp "$worker_group" /etc/cursor-workers/repo-env-files
 %{ endif ~}
 
 sudo -u "${worker_user}" git config --global credential.helper /usr/local/bin/git-credential-github-secretsmanager
 rm -f "/home/${worker_user}/.git-credentials"
 
 if ! sudo -u "${worker_user}" bash -lc 'command -v agent >/dev/null 2>&1'; then
-  sudo -u "${worker_user}" bash -lc 'curl -fsSL "https://www.cursor.com/install?channel=lab" | bash'
+  sudo -u "${worker_user}" bash -lc 'curl --proto "=https" --tlsv1.2 -fsSL "${cursor_install_url}" -o /tmp/install-cursor.sh && bash /tmp/install-cursor.sh && rm -f /tmp/install-cursor.sh'
 fi
 
 set -a
 . /etc/cursor-workers/env
 set +a
 
-for secret_id in "$CURSOR_API_SECRET_ID" "$GITHUB_PAT_SECRET_ID"; do
+for secret_id in "$CURSOR_API_SECRET_ID" "$SCM_TOKEN_SECRET_ID"; do
   secret_ready=0
   for attempt in {1..120}; do
     if aws secretsmanager get-secret-value \

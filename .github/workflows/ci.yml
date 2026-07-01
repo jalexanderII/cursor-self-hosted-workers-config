@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+
+      - name: Install static analysis tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive terraform
+
+      - name: Validate Terraform examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          for directory in \
+            terraform/examples/ec2-asg \
+            terraform/examples/eks-new-cluster \
+            terraform/examples/eks-existing-cluster; do
+            terraform -chdir="$directory" init -backend=false -input=false
+            terraform -chdir="$directory" validate
+          done
+
+      - name: Check shell scripts
+        run: |
+          shellcheck ec2/bin/* kube/worker-image/*.sh scripts/*.sh
+          for script in ec2/bin/* kube/worker-image/*.sh scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Run repository tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Validate YAML and rendered WorkerDeployment
+        shell: bash
+        run: |
+          ruby -ryaml -e 'ARGV.each { |p| YAML.load_stream(File.read(p)) }' \
+            kube/manifests/platform.example.yaml \
+            kube/manifests/workers.example.yaml \
+            kube/integrations/external-secrets/external-secrets.example.yaml
+          cd terraform/examples/eks-existing-cluster
+          printf 'jsonencode({manifest=local.worker_manifest})\n' |
+            terraform console \
+              -var-file=terraform.tfvars.example \
+              -var='worker_image_override=example.invalid/cursor-worker:release-test' |
+            jq -r . |
+            jq -r .manifest |
+            ruby -ryaml -e 'd=YAML.safe_load(STDIN.read); abort "invalid WorkerDeployment" unless d["kind"]=="WorkerDeployment"'
+
+      - name: Check compressed EC2 user-data limit
+        shell: bash
+        run: |
+          size="$(
+            printf 'module.ec2_workers.compressed_user_data_base64_length\n' |
+              terraform -chdir=terraform/examples/ec2-asg console \
+                -var-file=terraform.tfvars.example
+          )"
+          test "$size" -le 21848
+          echo "compressed user-data base64 length: $size"
+
+      - name: Build generic worker image
+        run: docker build -f kube/worker-image/Dockerfile kube/worker-image
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2

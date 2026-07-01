@@ -17,7 +17,8 @@ worker image and `WorkerDeployment` shape that Terraform renders.
 ## Overview
 
 - Installs Cursor's Kubernetes controller with Helm.
-- Builds a worker image with `agent`, `git`, and optional Node/pnpm tooling.
+- Builds a minimal worker image with `agent` and `git`; derive a repo-specific
+  image when additional build tooling is required.
 - Creates one isolated worker pod per idle worker.
 - Clones the repo fresh inside each pod.
 - Mounts Kubernetes Secrets for GitHub auth and repo-local env/config files.
@@ -134,34 +135,25 @@ CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
   --query SecretString \
   --output text)"
 
-kubectl create secret generic REPLACE_ME-workers-api-key \
-  --from-literal=api-key="$CURSOR_API_KEY" \
-  -n cursord \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl label secret REPLACE_ME-workers-api-key \
-  -n cursord \
-  workers.cursor.com/worker-deployment=REPLACE_ME-workers \
-  --overwrite
+printf '%s' "$CURSOR_API_KEY" | scripts/create-k8s-secret.sh \
+  cursord REPLACE_ME-workers-api-key api-key REPLACE_ME-workers
 
 unset CURSOR_API_KEY
 ```
 
-### GitHub PAT
+### SCM token
 
 ```bash
-GITHUB_PAT="$(aws secretsmanager get-secret-value \
+SCM_TOKEN="$(aws secretsmanager get-secret-value \
   --region REGION \
-  --secret-id cursor/self-hosted-workers/github-pat \
+  --secret-id cursor/self-hosted-workers/scm-token \
   --query SecretString \
   --output text)"
 
-kubectl create secret generic REPLACE_ME-github \
-  --from-literal=pat="$GITHUB_PAT" \
-  -n cursord \
-  --dry-run=client -o yaml | kubectl apply -f -
+printf '%s' "$SCM_TOKEN" | scripts/create-k8s-secret.sh \
+  cursord REPLACE_ME-scm token
 
-unset GITHUB_PAT
+unset SCM_TOKEN
 ```
 
 ### Repo Env / Config Files
@@ -230,6 +222,7 @@ Use the printed image URI in `manifests/workers.example.yaml`.
 Copy and edit the example:
 
 ```bash
+kubectl apply -f kube/manifests/platform.example.yaml
 cp kube/manifests/workers.example.yaml workers.yaml
 ```
 
@@ -237,11 +230,11 @@ Replace:
 
 - `REPLACE_ME-workers`
 - `REPLACE_ME-workers-api-key`
-- `REPLACE_ME-github`
+- `REPLACE_ME-scm`
 - `REPLACE_ME-repo-env`
 - `REPLACE_ME-worker`
 - `REPLACE_ME-pool`
-- `OWNER/REPO`
+- `https://github.com/OWNER/REPO.git`
 - `ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/REPLACE_ME-worker:TAG`
 
 Then apply the full manifest:
@@ -371,10 +364,13 @@ kubectl exec -n cursord "$POD" -- curl -s -i http://127.0.0.1:8080/readyz
 Check toolchain and mounted env files:
 
 ```bash
-kubectl exec -n cursord "$POD" -- node --version
-kubectl exec -n cursord "$POD" -- pnpm --version
+kubectl exec -n cursord "$POD" -- agent --version
+kubectl exec -n cursord "$POD" -- git --version
 kubectl exec -n cursord "$POD" -- ls -la /workspace
 ```
+
+Validate any repo-specific build tools supplied by your derived worker image in
+the same way.
 
 Check Cursor CLI flags supported by the image:
 
@@ -413,7 +409,7 @@ kubectl logs -n cursord POD_NAME
 Likely causes:
 
 - unsupported agent CLI flag
-- missing `GITHUB_PAT`
+- missing or unreadable SCM token Secret
 - missing mounted repo env file
 - bad `REPO_ENV_MAPPINGS`
 

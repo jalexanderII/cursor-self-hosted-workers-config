@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cursord
+  labels:
+    app.kubernetes.io/name: cursor-self-hosted-workers
+    app.kubernetes.io/part-of: cursor-self-hosted-cloud-agents
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cursor-worker
+  namespace: cursord
+  labels:
+    app.kubernetes.io/name: cursor-self-hosted-worker
+    app.kubernetes.io/part-of: cursor-self-hosted-cloud-agents
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cursor-worker-capacity
+  namespace: cursord
+spec:
+  hard:
+    pods: "100"
+    requests.cpu: "100"
+    requests.memory: 200Gi
+    requests.ephemeral-storage: 2Ti
+    limits.cpu: "400"
+    limits.memory: 800Gi
+    limits.ephemeral-storage: 5Ti
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cursor-worker-baseline
+  namespace: cursord
+spec:
+  podSelector:
+    matchLabels:
+      app: REPLACE_ME-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

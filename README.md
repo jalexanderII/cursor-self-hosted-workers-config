@@ -1,83 +1,151 @@
-# Cursor Self-Hosted Cloud Agents Templates
+# Cursor Self-Hosted Cloud Agent Pools on AWS
 
-Production-oriented templates for running Cursor self-hosted Cloud Agent workers
-on customer-managed AWS infrastructure.
+Composable reference templates for running Cursor Self-Hosted Pool workers on
+customer-managed EC2 or EKS infrastructure.
 
-The repo has two layers:
+This repository is a production-oriented starting point, not a turnkey managed
+service, compliance certification, or hard multi-tenant boundary. Review and
+adapt every control to your organization's threat model and platform standards.
 
-- Runtime assets in [`ec2/`](ec2/) and [`kube/`](kube/) that define how workers
-  start, clean workspaces, scale, and report health.
-- Terraform examples in [`terraform/examples/`](terraform/examples/) that make
-  those runtime assets repeatable for EC2 Auto Scaling Groups and EKS.
+## Shared responsibility
 
-Cursor still owns orchestration, model inference, and the Cloud Agents user
-experience. These workers connect outbound to Cursor over HTTPS and run inside
-your AWS account so they can reach your repos and private services.
+Cursor runs the agent loop, orchestration, model inference, worker routing,
+conversation experience, and uploaded artifact handling. Your organization owns
+the worker filesystem, images, compute, credentials, network policy, monitoring,
+capacity, backup, recovery, and incident response.
+
+Self-hosted workers use outbound HTTPS. Selected file contents and tool results
+cross to Cursor for inference and orchestration. Artifacts are uploaded to
+Cursor-managed storage unless that egress is blocked. Pool names, Cursor labels,
+Kubernetes namespaces, and Linux users are not hard tenant-isolation boundaries.
+
+Read [`docs/architecture.md`](docs/architecture.md) and
+[`docs/security.md`](docs/security.md) before deployment.
 
 ## Deployment paths
 
-| Path | Use when | Start here |
-| --- | --- | --- |
-| EC2 Auto Scaling Group | You want a small AWS footprint with systemd workers, git worktrees, local autoscaling, and CloudWatch metrics. | [`docs/aws-ec2-asg.md`](docs/aws-ec2-asg.md) |
-| Existing EKS cluster | You already have a production EKS/VPC baseline and want to add Cursor workers. | [`docs/aws-eks-existing-cluster.md`](docs/aws-eks-existing-cluster.md) |
-| New EKS cluster | You want this repo to create a baseline EKS cluster before installing workers. | [`docs/aws-eks-new-cluster.md`](docs/aws-eks-new-cluster.md) |
+- **Existing EKS cluster:** preferred when your organization already operates a
+  hardened Kubernetes platform. Start with
+  [`docs/aws-eks-existing-cluster.md`](docs/aws-eks-existing-cluster.md).
+- **New EKS cluster:** creates a private, multi-AZ baseline with explicit
+  administrator access. Start with
+  [`docs/aws-eks-new-cluster.md`](docs/aws-eks-new-cluster.md).
+- **EC2 Auto Scaling Group:** smaller operational surface using systemd workers.
+  The secure default is one worker per host. Start with
+  [`docs/aws-ec2-asg.md`](docs/aws-ec2-asg.md).
 
-## Quick start
+Cursor also publishes an
+[official self-hosted cookbook](https://github.com/cursor/cookbook/tree/main/self-hosted-cloud-agent)
+with EC2 container, ECS/Fargate, and EKS examples. This repository adds a
+systemd EC2 model, Terraform composition, shared-cluster hardening, FinOps, and
+DR guidance. It does not implement ECS/Fargate.
 
-Copy the local environment template:
+## Prerequisites
+
+- Cursor Enterprise with Self-Hosted Agents enabled
+- A Cursor service account API key for pool authentication
+- A reviewed HTTPS SCM credential scoped to required repositories
+- AWS credentials for the resources you choose to create
+- Terraform 1.15.7, AWS CLI, and the platform-specific tools in each runbook
+- Private network access to the EKS API when using the production private-only
+  cluster profile
+
+Use `mise install` and `mise lint` for the repository's validation toolchain.
+
+## Secret handling
+
+Do not put secret values in `.env`, Terraform variables, command arguments, or
+git. Supply `CURSOR_API_KEY` and `SCM_TOKEN` only to the specific Make target
+that writes them. Terraform creates secret containers and references, but never
+secret values.
+
+External Secrets Operator and Vault remain optional platform integrations. The
+repository provides an example without installing those systems.
+
+## EKS quick start
+
+Create or select the cluster and ECR repository first:
 
 ```bash
 cp .env.example .env
+make eks-cluster-init
+make eks-cluster-plan
+make eks-cluster-apply
 ```
 
-Edit `.env` for your AWS account, repo, Cursor worker pool, and secret names.
-Secret values such as `CURSOR_API_KEY` and `GITHUB_PAT` belong only in your local
-`.env` or shell.
-
-Create the AWS secret containers with Terraform, then populate the secret values
-outside Terraform:
+Configure kubeconfig using the Terraform output, then create worker
+infrastructure and build the image:
 
 ```bash
+eval "$(terraform -chdir=terraform/examples/eks-new-cluster output -raw update_kubeconfig_command)"
+make eks-workers-init
+make eks-workers-plan
+make eks-workers-apply
+make ecr-build-push
+```
+
+Create secrets from values supplied in the invoking shell, then apply workers:
+
+```bash
+CURSOR_API_KEY=... make kube-create-api-key-secret
+SCM_TOKEN=... make kube-create-scm-secret
+make kube-apply-rendered
+make kube-status
+```
+
+For an existing EKS cluster, skip the cluster targets.
+
+## EC2 quick start
+
+Production requires explicit VPC/private subnets and a reviewed AMI ID:
+
+```bash
+cp terraform/examples/ec2-asg/terraform.tfvars.example \
+  terraform/examples/ec2-asg/terraform.tfvars
 make ec2-init
 make ec2-plan
 make ec2-apply
-make put-secret-cursor-api-key
-make put-secret-github-pat
+CURSOR_API_KEY=... make put-secret-cursor-api-key
+SCM_TOKEN=... make put-secret-scm-token
 ```
 
-For EKS, build and push the worker image before applying the rendered worker
-manifest:
+New hosts are protected from ASG scale-in. Run
+`/usr/local/bin/cursor-workers-drain` through SSM before reducing capacity or
+starting an instance refresh.
 
-```bash
-make ecr-build-push
-make eks-workers-init
-make eks-workers-plan
-```
+## Reference guarantees and non-guarantees
 
-## What is production-ready here
+The templates provide:
 
-- Terraform modules for ECR, Secrets Manager, EC2 ASGs, EKS clusters, worker
-  controller installation, and EC2 CloudWatch dashboards.
-- EC2 workers run under systemd with clean git worktrees, conservative local
-  autoscaling, and per-instance CloudWatch metrics.
-- EKS workers use Cursor's official `worker-set-controller`, short-lived worker
-  tokens, fresh pod-local clones, readiness probes, liveness probes, and resource
-  requests.
-- Secrets are deliberately a two-step flow. Terraform creates names, ARNs, IAM,
-  and Kubernetes references; secret values are written with AWS CLI or `kubectl`
-  so they do not land in Terraform state.
+- EKS namespace-scoped controller RBAC, short-lived worker tokens, restricted
+  pod settings, ephemeral workspaces, quotas, and baseline network policy
+- EC2 IMDSv2, no inbound security-group rules, SSM administration, encrypted
+  disks, local readiness scaling, and explicit drain behavior
+- Immutable ECR defaults, scan-on-push, cost tags, and secret values kept out of
+  Terraform state
+- Credential-free CI validation for Terraform, shell, image, and repository
+  contracts
 
-## Existing manual templates
+They do not provide:
 
-The original hand-run guides are still useful when debugging or adapting the
-runtime behavior directly:
+- automatic multi-region failover or restoration of worker disks
+- hard isolation between hostile tenants sharing a cluster or EC2 host
+- portable FQDN enforcement through Kubernetes NetworkPolicy
+- a managed Karpenter, Cluster Autoscaler, service mesh, observability, Vault,
+  or External Secrets installation
 
-- [`ec2/`](ec2/) - EC2 systemd worker fleet, worktrees, local autoscaling, and
-  CloudWatch metrics.
-- [`kube/`](kube/) - Kubernetes/EKS worker image and `WorkerDeployment` example.
+## Documentation
 
-## Operations and security
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/security.md`](docs/security.md)
+- [`docs/networking.md`](docs/networking.md)
+- [`docs/finops.md`](docs/finops.md)
+- [`docs/disaster-recovery.md`](docs/disaster-recovery.md)
+- [`docs/version-maintenance.md`](docs/version-maintenance.md)
+- [`docs/migration-v2.md`](docs/migration-v2.md)
+- [`docs/operations.md`](docs/operations.md)
+- [`docs/production-checklist.md`](docs/production-checklist.md)
 
-Read [`docs/security.md`](docs/security.md) before deploying into a shared AWS
-account. Read [`docs/operations.md`](docs/operations.md) for rotation, scaling,
-rollouts, rollback, and cleanup.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local validation and change
+requirements. No license is granted by this repository unless a license file is
+added by its owner.

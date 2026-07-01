@@ -15,7 +15,7 @@ set +a
 MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
 BASE_DIR="${CURSOR_WORKERS_BASE_DIR:-/opt/cursor-workers/base}"
 WORKER_USER="${CURSOR_WORKER_USER:-ubuntu}"
-GITHUB_HOST="${GITHUB_HOST:-github.com}"
+SCM_HOST="${SCM_HOST:-${GITHUB_HOST:-github.com}}"
 LOCK_FILE="${CURSOR_WORKERS_RECONCILE_LOCK:-/var/lock/cursor-workers-reconcile.lock}"
 HOSTNAME_VALUE="$(hostname)"
 INSTANCE_ID="$HOSTNAME_VALUE"
@@ -41,7 +41,7 @@ BRANCH="$(jq -r '.branch' "$MANIFEST")"
 if [ ! -d "$BASE_DIR/.git" ]; then
   mkdir -p "$(dirname "$BASE_DIR")"
   chown "$WORKER_USER:$WORKER_USER" "$(dirname "$BASE_DIR")"
-  sudo -u "$WORKER_USER" git clone "https://${GITHUB_HOST}/${REPO}.git" "$BASE_DIR"
+  sudo -u "$WORKER_USER" git clone "https://${SCM_HOST}/${REPO}.git" "$BASE_DIR"
   sudo -u "$WORKER_USER" git -C "$BASE_DIR" checkout "$BRANCH"
 fi
 
@@ -92,7 +92,20 @@ Environment=CURSOR_WORKER_PORT=${port}
 ExecStart=/usr/local/bin/cursor-worker-start
 Restart=always
 RestartSec=10
+KillMode=control-group
+TimeoutStopSec=120
+UMask=0077
 LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

@@ -15,18 +15,19 @@ AWS Secrets Manager:
 
 ```bash
 CURSOR_API_KEY=... make put-secret-cursor-api-key
-GITHUB_PAT=... make put-secret-github-pat
+SCM_TOKEN=... make put-secret-scm-token
 ```
 
 Kubernetes:
 
 ```bash
 CURSOR_API_KEY=... make kube-create-api-key-secret
-GITHUB_PAT=... make kube-create-github-secret
+SCM_TOKEN=... make kube-create-scm-secret
 ```
 
-EC2 workers read secrets at process start. Restart idle systemd units or roll
-instances. EKS workers may need pod restarts after Kubernetes secret updates.
+EC2 workers read secrets at process start. Restart only idle systemd units.
+Kubernetes controller-managed worker tokens rotate without exposing the
+long-lived Cursor key to worker pods.
 
 ## EC2 health
 
@@ -92,14 +93,46 @@ worker_ready_replicas = 5
 Add node capacity separately through the EKS node group, Cluster Autoscaler, or
 Karpenter.
 
+The Cursor fleet API also exposes pending pool requests. Use it as an optional
+demand signal for an external scaler. Keep local EC2 scaling based on each
+host's documented `/readyz` and `/metrics` endpoints so one fleet does not react
+to another fleet's capacity.
+
+```text
+GET https://api.cursor.com/v0/private-workers/pending-requests
+```
+
+Repo-scoped service account keys must pass the corresponding repository filter.
+
+The default team limit is 50 workers unless Cursor approves a larger fleet.
+
+## EC2 drain and instance refresh
+
+EC2 instances are protected from ASG scale-in. Before reducing desired capacity
+or starting a refresh, run:
+
+```bash
+sudo /usr/local/bin/cursor-workers-drain
+```
+
+The script:
+
+1. stops local autoscaling
+2. waits until every worker returns HTTP 200 from `/readyz`
+3. stops worker services
+4. removes scale-in protection from that instance
+
+If the timeout expires, the script exits non-zero and leaves protection enabled.
+Never bypass this for a host that may have an active session.
+
 ## Rollback
 
 EC2:
 
-1. Revert the Terraform/script change.
-2. Apply Terraform.
-3. Start an ASG instance refresh or terminate bad instances and let the ASG
-   replace them.
+1. Revert the Terraform/script or pinned AMI change.
+2. Apply Terraform to create a reviewed Launch Template version.
+3. Drain each old instance.
+4. Start an ASG instance refresh only after the affected instances are safe.
 
 EKS:
 
@@ -123,7 +156,7 @@ Check CPU, memory, CNI IP capacity, taints, image pull errors, and node group
 size.
 
 EC2 workers keep restarting:
-Check `cursor-worker-start` logs. Common causes are bad GitHub credentials,
+Check `cursor-worker-start` logs. Common causes are bad SCM credentials,
 missing repo access, invalid Cursor API key, or an unsupported agent CLI flag.
 
 ## Cleanup
@@ -139,3 +172,10 @@ terraform -chdir=terraform/examples/ec2-asg destroy
 
 AWS Secrets Manager secrets may remain in scheduled deletion until the configured
 recovery window expires.
+
+For EC2, drain all hosts before reducing the ASG or destroying the stack. For
+EKS, set `readyReplicas: 0` and wait for active sessions to finish before
+deleting the WorkerDeployment.
+
+See [`disaster-recovery.md`](disaster-recovery.md) for recovery testing and
+[`production-checklist.md`](production-checklist.md) for go-live criteria.

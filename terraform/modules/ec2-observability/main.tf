@@ -43,7 +43,7 @@ resource "aws_cloudwatch_dashboard" "workers" {
           metrics = [
             [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"TotalWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "TotalWorkers", id = "total" }],
             [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ReadyWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "ReadyWorkers", id = "ready" }],
-            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ClaimedWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "ClaimedWorkers", id = "claimed" }],
+            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ActiveWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "ActiveWorkers", id = "active" }],
             [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"FailedWorkerServices\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "FailedWorkerServices", id = "failed" }]
           ]
           stat   = "Sum"

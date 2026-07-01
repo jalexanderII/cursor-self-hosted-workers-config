@@ -20,6 +20,13 @@ variable "force_delete" {
   default     = false
 }
 
+variable "kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN. When null, ECR uses AES256."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
 variable "lifecycle_keep_tagged_images" {
   description = "Number of tagged images to retain."
   type        = number
@@ -38,7 +45,8 @@ resource "aws_ecr_repository" "worker" {
   force_delete         = var.force_delete
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = var.kms_key_arn == null ? "AES256" : "KMS"
+    kms_key         = var.kms_key_arn
   }
 
   image_scanning_configuration {

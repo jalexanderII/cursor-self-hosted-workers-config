@@ -14,13 +14,20 @@ cluster. Terraform manages:
 Secret values and the `WorkerDeployment` apply are intentionally outside
 Terraform state.
 
+Set `manage_aws_secret_containers = false` when AWS Secrets Manager or Vault
+objects are owned by an enterprise platform team. Continue to supply the
+Kubernetes Secret names expected by the WorkerDeployment.
+
+Set `manage_ecr_repository = false` plus `existing_ecr_repository_url` when the
+worker image repository is also platform-managed.
+
 ## Prerequisites
 
 - A working EKS cluster and kubeconfig.
 - Helm 3 and `kubectl`.
 - Docker buildx for the worker image.
 - Cursor service account API key.
-- GitHub PAT for the target repo.
+- Least-privilege HTTPS SCM token for the target repo.
 
 ## Configure
 
@@ -35,7 +42,7 @@ AWS_REGION=us-east-1
 EKS_WORKERS_TF_DIR=terraform/examples/eks-existing-cluster
 K8S_NAMESPACE=cursord
 WORKER_DEPLOYMENT_NAME=cursor-workers
-REPO_SLUG=YOUR_ORG/YOUR_REPO
+REPO_URL=https://github.com/YOUR_ORG/YOUR_REPO.git
 REPO_BRANCH=main
 CURSOR_WORKER_POOL_NAME=prod-eks
 WORKER_READY_REPLICAS=3
@@ -69,7 +76,7 @@ For a stricter release flow, set a unique `WORKER_IMAGE_TAG` per release and set
 
 ```bash
 CURSOR_API_KEY=... make kube-create-api-key-secret
-GITHUB_PAT=... make kube-create-github-secret
+SCM_TOKEN=... make kube-create-scm-secret
 ```
 
 For repo env/config files, create a Kubernetes Secret from files:
@@ -87,6 +94,10 @@ Then set these Terraform vars before rendering again:
 repo_env_secret_name_k8s = "cursor-workers-repo-env"
 repo_env_mappings        = "app.env:.env"
 ```
+
+For enterprise secret synchronization, use
+[`../kube/integrations/external-secrets/external-secrets.example.yaml`](../kube/integrations/external-secrets/external-secrets.example.yaml)
+with an operator and `SecretStore` managed by your platform team.
 
 ## Apply workers
 
@@ -131,6 +142,11 @@ make kube-apply-rendered
 
 Node capacity is separate. Pending pods usually mean insufficient CPU, memory,
 IP addresses, image pull permissions, or node taints.
+
+The baseline applies restricted Pod Security, a dedicated ServiceAccount,
+bounded ephemeral storage, ResourceQuota, and a NetworkPolicy that permits DNS
+and outbound HTTPS. The policy cannot enforce FQDNs; use the controls described
+in [`networking.md`](networking.md).
 
 ## Roll out image changes
 

@@ -1,13 +1,17 @@
 SHELL := /bin/bash
 
 -include .env
-export
+export AWS_PROFILE AWS_REGION AWS_ACCOUNT_ID DEPLOYMENT_NAME ENVIRONMENT
+export ECR_REPOSITORY_NAME WORKER_IMAGE_TAG WORKER_PLATFORM
+export EC2_TF_DIR EKS_CLUSTER_TF_DIR EKS_WORKERS_TF_DIR
+export K8S_NAMESPACE WORKER_DEPLOYMENT_NAME CURSOR_API_KEY_SECRET_NAME SCM_TOKEN_SECRET_NAME
+export $(filter TF_VAR_%,$(.VARIABLES))
 
 AWS_PROFILE ?= default
 AWS_REGION ?= us-east-1
 AWS_ACCOUNT_ID_RESOLVED := $(if $(AWS_ACCOUNT_ID),$(AWS_ACCOUNT_ID),$(shell aws sts get-caller-identity --profile "$(AWS_PROFILE)" --query Account --output text 2>/dev/null))
 ECR_REPOSITORY_NAME ?= cursor-self-hosted-worker
-WORKER_IMAGE_TAG ?= latest
+WORKER_IMAGE_TAG ?= dev-$(shell git rev-parse --short HEAD 2>/dev/null || echo local)
 WORKER_PLATFORM ?= linux/amd64
 ECR_REGISTRY := $(AWS_ACCOUNT_ID_RESOLVED).dkr.ecr.$(AWS_REGION).amazonaws.com
 ECR_WORKER_IMAGE := $(ECR_REGISTRY)/$(ECR_REPOSITORY_NAME):$(WORKER_IMAGE_TAG)
@@ -18,22 +22,22 @@ EKS_WORKERS_TF_DIR ?= terraform/examples/eks-existing-cluster
 K8S_NAMESPACE ?= cursord
 WORKER_DEPLOYMENT_NAME ?= cursor-workers
 CURSOR_API_KEY_SECRET_NAME ?= cursor-workers-api-key
-GITHUB_PAT_SECRET_NAME ?= cursor-workers-github
+SCM_TOKEN_SECRET_NAME ?= cursor-workers-scm
 
 .PHONY: help \
 	ecr-login ecr-build-push \
-	put-secret-cursor-api-key put-secret-github-pat \
+	put-secret-cursor-api-key put-secret-scm-token \
 	ec2-init ec2-plan ec2-apply ec2-validate \
 	eks-cluster-init eks-cluster-plan eks-cluster-apply eks-cluster-validate \
 	eks-workers-init eks-workers-plan eks-workers-apply eks-workers-validate \
-	kube-create-api-key-secret kube-create-github-secret kube-apply-rendered kube-status \
-	terraform-fmt terraform-validate-all
+	kube-create-api-key-secret kube-create-scm-secret kube-apply-rendered kube-status \
+	terraform-fmt terraform-validate-all test lint check
 
 help:
 	@echo "Targets:"
 	@echo "  ecr-build-push              Build and push kube/worker-image to ECR"
 	@echo "  put-secret-cursor-api-key   Store CURSOR_API_KEY in AWS Secrets Manager"
-	@echo "  put-secret-github-pat       Store GITHUB_PAT in AWS Secrets Manager"
+	@echo "  put-secret-scm-token        Store SCM_TOKEN in AWS Secrets Manager"
 	@echo "  ec2-init|plan|apply         Manage the EC2 ASG Terraform example"
 	@echo "  eks-cluster-init|plan|apply Manage the optional new EKS cluster example"
 	@echo "  eks-workers-init|plan|apply Manage workers on an existing EKS cluster"
@@ -41,6 +45,7 @@ help:
 	@echo "  kube-apply-rendered         Apply Terraform-rendered WorkerDeployment YAML"
 	@echo "  terraform-fmt               Format all Terraform files"
 	@echo "  terraform-validate-all      Validate all Terraform examples"
+	@echo "  test|lint|check             Run repository validation"
 
 ecr-login:
 	@if [[ -z "$(AWS_ACCOUNT_ID_RESOLVED)" ]]; then echo "AWS_ACCOUNT_ID or AWS CLI auth is required."; exit 1; fi
@@ -51,28 +56,23 @@ ecr-build-push: ecr-login
 	docker buildx build \
 		--platform "$(WORKER_PLATFORM)" \
 		-f kube/worker-image/Dockerfile \
+		--build-arg BUILD_DATE="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		--build-arg VCS_REF="$$(git rev-parse HEAD)" \
+		--build-arg VERSION="$(WORKER_IMAGE_TAG)" \
+		--provenance=mode=max \
+		--sbom=true \
 		-t "$(ECR_WORKER_IMAGE)" \
 		--push \
 		kube/worker-image
 	@echo "Pushed $(ECR_WORKER_IMAGE)"
 
 put-secret-cursor-api-key:
-	@if [[ -z "$${CURSOR_API_KEY:-}" ]]; then echo "CURSOR_API_KEY must be set in .env or the shell."; exit 1; fi
-	aws secretsmanager put-secret-value \
-		--profile "$(AWS_PROFILE)" \
-		--region "$(AWS_REGION)" \
-		--secret-id "$${CURSOR_API_SECRET_ID:-cursor/self-hosted-workers/cursor-api-key}" \
-		--secret-string "$${CURSOR_API_KEY}" >/dev/null
-	@echo "Updated Cursor API key secret."
+	@if [[ -z "$${CURSOR_API_KEY:-}" ]]; then echo "CURSOR_API_KEY must be supplied in the invoking shell."; exit 1; fi
+	@printf '%s' "$${CURSOR_API_KEY}" | scripts/put-secret-value.sh "$${CURSOR_API_SECRET_ID:-cursor/self-hosted-workers/cursor-api-key}"
 
-put-secret-github-pat:
-	@if [[ -z "$${GITHUB_PAT:-}" ]]; then echo "GITHUB_PAT must be set in .env or the shell."; exit 1; fi
-	aws secretsmanager put-secret-value \
-		--profile "$(AWS_PROFILE)" \
-		--region "$(AWS_REGION)" \
-		--secret-id "$${GITHUB_PAT_SECRET_ID:-cursor/self-hosted-workers/github-pat}" \
-		--secret-string "$${GITHUB_PAT}" >/dev/null
-	@echo "Updated GitHub PAT secret."
+put-secret-scm-token:
+	@if [[ -z "$${SCM_TOKEN:-}" ]]; then echo "SCM_TOKEN must be supplied in the invoking shell."; exit 1; fi
+	@printf '%s' "$${SCM_TOKEN}" | scripts/put-secret-value.sh "$${SCM_TOKEN_SECRET_ID:-cursor/self-hosted-workers/scm-token}"
 
 ec2-init:
 	terraform -chdir="$(EC2_TF_DIR)" init
@@ -111,24 +111,14 @@ eks-workers-validate:
 	terraform -chdir="$(EKS_WORKERS_TF_DIR)" validate
 
 kube-create-api-key-secret:
-	@if [[ -z "$${CURSOR_API_KEY:-}" ]]; then echo "CURSOR_API_KEY must be set in .env or the shell."; exit 1; fi
-	kubectl create namespace "$(K8S_NAMESPACE)" --dry-run=client -o yaml | kubectl apply -f -
-	kubectl create secret generic "$(CURSOR_API_KEY_SECRET_NAME)" \
-		--from-literal=api-key="$${CURSOR_API_KEY}" \
-		-n "$(K8S_NAMESPACE)" \
-		--dry-run=client -o yaml | kubectl apply -f -
-	kubectl label secret "$(CURSOR_API_KEY_SECRET_NAME)" \
-		-n "$(K8S_NAMESPACE)" \
-		"workers.cursor.com/worker-deployment=$(WORKER_DEPLOYMENT_NAME)" \
-		--overwrite
+	@if [[ -z "$${CURSOR_API_KEY:-}" ]]; then echo "CURSOR_API_KEY must be supplied in the invoking shell."; exit 1; fi
+	@printf '%s' "$${CURSOR_API_KEY}" | scripts/create-k8s-secret.sh \
+		"$(K8S_NAMESPACE)" "$(CURSOR_API_KEY_SECRET_NAME)" api-key "$(WORKER_DEPLOYMENT_NAME)"
 
-kube-create-github-secret:
-	@if [[ -z "$${GITHUB_PAT:-}" ]]; then echo "GITHUB_PAT must be set in .env or the shell."; exit 1; fi
-	kubectl create namespace "$(K8S_NAMESPACE)" --dry-run=client -o yaml | kubectl apply -f -
-	kubectl create secret generic "$(GITHUB_PAT_SECRET_NAME)" \
-		--from-literal=pat="$${GITHUB_PAT}" \
-		-n "$(K8S_NAMESPACE)" \
-		--dry-run=client -o yaml | kubectl apply -f -
+kube-create-scm-secret:
+	@if [[ -z "$${SCM_TOKEN:-}" ]]; then echo "SCM_TOKEN must be supplied in the invoking shell."; exit 1; fi
+	@printf '%s' "$${SCM_TOKEN}" | scripts/create-k8s-secret.sh \
+		"$(K8S_NAMESPACE)" "$(SCM_TOKEN_SECRET_NAME)" token
 
 kube-apply-rendered:
 	kubectl apply -f "$(EKS_WORKERS_TF_DIR)/rendered/workers.yaml"
@@ -139,4 +129,13 @@ kube-status:
 terraform-fmt:
 	terraform fmt -recursive terraform
 
-terraform-validate-all: ec2-validate eks-cluster-validate eks-workers-validate
+terraform-validate-all:
+	scripts/validate.sh
+
+test:
+	python3 -m unittest discover -s tests -p 'test_*.py'
+
+lint:
+	scripts/validate.sh
+
+check: lint

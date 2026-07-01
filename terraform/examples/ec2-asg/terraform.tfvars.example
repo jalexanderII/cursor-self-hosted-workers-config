@@ -2,24 +2,31 @@ aws_region      = "us-east-1"
 deployment_name = "cursor-workers"
 environment     = "prod"
 
-# Prefer private subnets with NAT egress. Leave null/empty only for a quick
-# first pass in an account that still has a default VPC.
+# Use explicit private subnets in at least two availability zones.
 vpc_id     = "vpc-REPLACE_ME"
 subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B", "subnet-REPLACE_ME_C"]
 
 repo_slug        = "YOUR_ORG/YOUR_REPO"
 repo_branch      = "main"
 worker_pool_name = "prod-ec2"
+scm_host         = "github.com"
+scm_username     = "x-access-token"
 
 cursor_api_secret_name = "cursor/self-hosted-workers/cursor-api-key"
-github_pat_secret_name = "cursor/self-hosted-workers/github-pat"
+scm_token_secret_name  = "cursor/self-hosted-workers/scm-token"
+
+# For enterprise-managed existing secrets:
+# manage_aws_secret_containers   = false
+# existing_cursor_api_secret_arn = "arn:aws:secretsmanager:..."
+# existing_scm_token_secret_arn  = "arn:aws:secretsmanager:..."
 
 ec2_instance_type             = "m6i.xlarge"
+ec2_ami_id                    = "ami-REPLACE_WITH_REVIEWED_UBUNTU_2404"
 ec2_asg_min_size              = 1
 ec2_asg_desired_capacity      = 2
-ec2_asg_max_size              = 6
-ec2_worker_slots_per_instance = 5
-ec2_max_local_workers         = 15
+ec2_asg_max_size              = 3
+ec2_worker_slots_per_instance = 1
+ec2_max_local_workers         = 1
 
 labels_json = <<JSON
 {
@@ -27,3 +34,8 @@ labels_json = <<JSON
   "platform": "ec2"
 }
 JSON
+
+extra_tags = {
+  CostCenter = "REPLACE_ME"
+  Owner      = "REPLACE_ME"
+}

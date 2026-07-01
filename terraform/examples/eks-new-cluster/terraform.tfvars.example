@@ -3,9 +3,15 @@ deployment_name = "cursor-workers"
 environment     = "prod"
 
 eks_cluster_name       = "cursor-workers"
-eks_cluster_version    = "1.30"
+eks_cluster_version    = "1.35"
 eks_vpc_cidr           = "10.40.0.0/16"
 eks_single_nat_gateway = false
+eks_admin_principal_arn = "arn:aws:iam::ACCOUNT_ID:role/REPLACE_ME_EKS_ADMIN"
+
+# Private-only is the production default. If temporary public access is
+# required, set true and provide narrow corporate/VPN CIDRs.
+eks_cluster_endpoint_public_access       = false
+eks_cluster_endpoint_public_access_cidrs = []
 
 eks_node_instance_types = ["m6i.xlarge"]
 eks_node_min_size       = 2

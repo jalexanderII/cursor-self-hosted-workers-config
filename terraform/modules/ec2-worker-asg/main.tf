@@ -29,10 +29,16 @@ variable "repo_branch" {
   default     = "main"
 }
 
-variable "github_host" {
-  description = "Git host used by the EC2 git credential helper."
+variable "scm_host" {
+  description = "HTTPS SCM host used by the EC2 git credential helper."
   type        = string
   default     = "github.com"
+}
+
+variable "scm_username" {
+  description = "HTTPS SCM username."
+  type        = string
+  default     = "x-access-token"
 }
 
 variable "worker_pool_name" {
@@ -55,13 +61,13 @@ variable "worker_user" {
 variable "worker_slots_per_instance" {
   description = "Initial worker slots per EC2 instance."
   type        = number
-  default     = 5
+  default     = 1
 }
 
 variable "max_local_workers" {
   description = "Maximum worker slots that local autoscaling may create on one instance."
   type        = number
-  default     = 15
+  default     = 1
 }
 
 variable "autoscale_min_idle" {
@@ -101,6 +107,17 @@ variable "ami_id" {
   nullable    = true
 }
 
+variable "cursor_install_url" {
+  description = "Cursor CLI installer URL. Override with a reviewed internal mirror when required."
+  type        = string
+  default     = "https://cursor.com/install"
+
+  validation {
+    condition     = can(regex("^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$", var.cursor_install_url))
+    error_message = "cursor_install_url must be an HTTPS URL without quotes or whitespace."
+  }
+}
+
 variable "associate_public_ip_address" {
   description = "Whether to assign public IPs. Prefer false for private subnets with NAT."
   type        = bool
@@ -117,6 +134,13 @@ variable "root_volume_type" {
   description = "Root EBS volume type."
   type        = string
   default     = "gp3"
+}
+
+variable "root_volume_kms_key_id" {
+  description = "Optional customer-managed KMS key ID or ARN for root EBS encryption."
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "asg_min_size" {
@@ -147,13 +171,13 @@ variable "cursor_api_secret_name" {
   type        = string
 }
 
-variable "github_pat_secret_arn" {
-  description = "ARN of the GitHub PAT secret."
+variable "scm_token_secret_arn" {
+  description = "ARN of the HTTPS SCM token secret."
   type        = string
 }
 
-variable "github_pat_secret_name" {
-  description = "Name or ID of the GitHub PAT secret."
+variable "scm_token_secret_name" {
+  description = "Name or ID of the HTTPS SCM token secret."
   type        = string
 }
 
@@ -161,6 +185,13 @@ variable "repo_env_secret_arns" {
   description = "Optional repo-local env/config secret ARNs."
   type        = list(string)
   default     = []
+}
+
+variable "secrets_kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN used by worker Secrets Manager secrets."
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "repo_env_mappings" {
@@ -186,10 +217,15 @@ variable "metric_namespace" {
   default     = "Cursor/SelfHostedWorkers"
 }
 
-variable "egress_cidr_blocks" {
-  description = "CIDR blocks allowed for outbound HTTPS and DNS."
+variable "https_egress_cidr_blocks" {
+  description = "CIDR blocks allowed for outbound HTTPS. Security groups cannot enforce FQDN restrictions."
   type        = list(string)
   default     = ["0.0.0.0/0"]
+}
+
+variable "dns_egress_cidr_blocks" {
+  description = "CIDR blocks allowed for DNS. Prefer the VPC resolver/network rather than internet-wide DNS."
+  type        = list(string)
 }
 
 variable "tags" {
@@ -213,6 +249,8 @@ data "aws_ami" "ubuntu" {
     values = ["hvm"]
   }
 }
+
+data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "assume_role" {
   statement {
@@ -247,8 +285,9 @@ locals {
   env_file = join("\n", compact([
     "AWS_REGION=${var.aws_region}",
     "CURSOR_API_SECRET_ID=${var.cursor_api_secret_name}",
-    "GITHUB_PAT_SECRET_ID=${var.github_pat_secret_name}",
-    "GITHUB_HOST=${var.github_host}",
+    "SCM_TOKEN_SECRET_ID=${var.scm_token_secret_name}",
+    "SCM_HOST=${var.scm_host}",
+    "SCM_USERNAME=${var.scm_username}",
     "CURSOR_WORKER_POOL_NAME=${var.worker_pool_name}",
     "CURSOR_WORKER_IDLE_RELEASE_TIMEOUT=${var.worker_idle_release_timeout}",
     "CURSOR_WORKER_USER=${var.worker_user}",
@@ -259,8 +298,10 @@ locals {
     "CURSOR_WORKERS_GIT_CLEAN_LOCK=/tmp/cursor-worker-git-cleanup.lock",
     "CURSOR_WORKERS_RECONCILE_LOCK=/var/lock/cursor-workers-reconcile.lock",
     "CURSOR_WORKERS_AUTOSCALE_LOCK=/var/lock/cursor-workers-autoscale.lock",
+    "CURSOR_WORKERS_DRAIN_MARKER=/run/cursor-workers/draining",
+    "CURSOR_ASG_NAME=${var.name_prefix}-workers",
     var.repo_env_mappings == "" ? "" : "CURSOR_REPO_ENV_FILES=/etc/cursor-workers/repo-env-files",
-    "CURSOR_WORKER_CLEAN_MODE=normal",
+    "CURSOR_WORKER_CLEAN_MODE=full",
     "CURSOR_AUTOSCALE_MIN_IDLE=${var.autoscale_min_idle}",
     "CURSOR_AUTOSCALE_SCALE_STEP=${var.autoscale_scale_step}",
     "CURSOR_AUTOSCALE_MAX_LOCAL_WORKERS=${var.max_local_workers}",
@@ -274,10 +315,12 @@ locals {
 
   user_data = templatefile("${path.module}/../../templates/ec2-user-data.sh.tftpl", {
     worker_user                        = var.worker_user
+    cursor_install_url                 = var.cursor_install_url
     git_credential_helper_b64          = base64encode(file("${path.module}/../../../ec2/bin/git-credential-github-secretsmanager"))
     cursor_worker_start_b64            = base64encode(file("${path.module}/../../../ec2/bin/cursor-worker-start"))
     cursor_workers_reconcile_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-reconcile"))
     cursor_workers_autoscale_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-autoscale"))
+    cursor_workers_drain_b64           = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-drain"))
     cursor_workers_publish_metrics_b64 = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-publish-metrics"))
     autoscale_service_b64              = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.service"))
     autoscale_timer_b64                = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.timer"))
@@ -290,13 +333,22 @@ locals {
   })
 
   secret_arns = concat(
-    [var.cursor_api_secret_arn, var.github_pat_secret_arn],
+    [var.cursor_api_secret_arn, var.scm_token_secret_arn],
     var.repo_env_secret_arns
   )
 
   asg_tags = merge(var.tags, {
     Name = "${var.name_prefix}-worker"
   })
+}
+
+check "compressed_user_data_fits_ec2_limit" {
+  assert {
+    # Launch Template user data is base64-encoded after gzip compression.
+    # 21,848 base64 characters is the ceiling for a 16 KiB decoded payload.
+    condition     = length(base64gzip(local.user_data)) <= 21848
+    error_message = "Compressed EC2 user data exceeds the 16 KiB Launch Template limit. Move additional bootstrap assets into the AMI or an authenticated artifact store."
+  }
 }
 
 resource "aws_iam_role" "worker" {
@@ -311,25 +363,41 @@ resource "aws_iam_role_policy" "worker" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "ReadWorkerSecrets"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = local.secret_arns
-      },
-      {
-        Sid      = "PublishWorkerMetrics"
-        Effect   = "Allow"
-        Action   = ["cloudwatch:PutMetricData"]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "cloudwatch:namespace" = var.metric_namespace
+    Statement = concat(
+      [
+        {
+          Sid      = "ReadWorkerSecrets"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = local.secret_arns
+        },
+        {
+          Sid      = "PublishWorkerMetrics"
+          Effect   = "Allow"
+          Action   = ["cloudwatch:PutMetricData"]
+          Resource = "*"
+          Condition = {
+            StringEquals = {
+              "cloudwatch:namespace" = var.metric_namespace
+            }
           }
+        },
+        {
+          Sid      = "ReleaseScaleInProtectionAfterDrain"
+          Effect   = "Allow"
+          Action   = ["autoscaling:SetInstanceProtection"]
+          Resource = "arn:aws:autoscaling:${var.aws_region}:${data.aws_caller_identity.current.account_id}:autoScalingGroup:*:autoScalingGroupName/${var.name_prefix}-workers"
         }
-      }
-    ]
+      ],
+      var.secrets_kms_key_arn == null ? [] : [
+        {
+          Sid      = "DecryptWorkerSecrets"
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt"]
+          Resource = var.secrets_kms_key_arn
+        }
+      ]
+    )
   })
 }
 
@@ -352,7 +420,7 @@ resource "aws_security_group" "worker" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "https" {
-  for_each          = toset(var.egress_cidr_blocks)
+  for_each          = toset(var.https_egress_cidr_blocks)
   security_group_id = aws_security_group.worker.id
   description       = "Allow outbound HTTPS."
   cidr_ipv4         = each.value
@@ -362,7 +430,7 @@ resource "aws_vpc_security_group_egress_rule" "https" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "dns_udp" {
-  for_each          = toset(var.egress_cidr_blocks)
+  for_each          = toset(var.dns_egress_cidr_blocks)
   security_group_id = aws_security_group.worker.id
   description       = "Allow outbound DNS over UDP."
   cidr_ipv4         = each.value
@@ -372,7 +440,7 @@ resource "aws_vpc_security_group_egress_rule" "dns_udp" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "dns_tcp" {
-  for_each          = toset(var.egress_cidr_blocks)
+  for_each          = toset(var.dns_egress_cidr_blocks)
   security_group_id = aws_security_group.worker.id
   description       = "Allow outbound DNS over TCP."
   cidr_ipv4         = each.value
@@ -385,7 +453,9 @@ resource "aws_launch_template" "worker" {
   name_prefix   = "${var.name_prefix}-worker-"
   image_id      = var.ami_id == null ? data.aws_ami.ubuntu[0].id : var.ami_id
   instance_type = var.instance_type
-  user_data     = base64encode(local.user_data)
+  # cloud-init automatically detects and decompresses gzip user data.
+  user_data              = base64gzip(local.user_data)
+  update_default_version = true
 
   iam_instance_profile {
     name = aws_iam_instance_profile.worker.name
@@ -394,7 +464,7 @@ resource "aws_launch_template" "worker" {
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 2
+    http_put_response_hop_limit = 1
     instance_metadata_tags      = "enabled"
   }
 
@@ -408,6 +478,7 @@ resource "aws_launch_template" "worker" {
 
     ebs {
       encrypted             = true
+      kms_key_id            = var.root_volume_kms_key_id
       volume_size           = var.root_volume_size_gb
       volume_type           = var.root_volume_type
       delete_on_termination = true
@@ -432,23 +503,18 @@ resource "aws_launch_template" "worker" {
 }
 
 resource "aws_autoscaling_group" "worker" {
-  name                = "${var.name_prefix}-workers"
-  min_size            = var.asg_min_size
-  desired_capacity    = var.asg_desired_capacity
-  max_size            = var.asg_max_size
-  vpc_zone_identifier = var.subnet_ids
-  health_check_type   = "EC2"
+  name                  = "${var.name_prefix}-workers"
+  min_size              = var.asg_min_size
+  desired_capacity      = var.asg_desired_capacity
+  max_size              = var.asg_max_size
+  vpc_zone_identifier   = var.subnet_ids
+  health_check_type     = "EC2"
+  protect_from_scale_in = true
+  capacity_rebalance    = true
 
   launch_template {
     id      = aws_launch_template.worker.id
-    version = "$Latest"
-  }
-
-  instance_refresh {
-    strategy = "Rolling"
-    preferences {
-      min_healthy_percentage = 100
-    }
+    version = "$Default"
   }
 
   dynamic "tag" {
@@ -479,4 +545,9 @@ output "security_group_id" {
 output "instance_profile_name" {
   description = "EC2 worker instance profile name."
   value       = aws_iam_instance_profile.worker.name
+}
+
+output "compressed_user_data_base64_length" {
+  description = "Length of the base64-encoded gzip user-data payload; must remain at or below 21,848 characters."
+  value       = length(base64gzip(local.user_data))
 }

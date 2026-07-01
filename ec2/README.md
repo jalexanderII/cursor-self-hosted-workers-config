@@ -9,7 +9,7 @@ runtime scripts that Terraform installs.
 
 The setup uses:
 
-- AWS Secrets Manager for the Cursor service account key and GitHub PAT
+- AWS Secrets Manager for the Cursor service account key and HTTPS SCM token
 - optional AWS Secrets Manager hydration for repo-local `.env` / config files
 - systemd for worker lifecycle management
 - git worktrees for multiple concurrent workers on one repo
@@ -27,7 +27,7 @@ make ec2-init
 make ec2-plan
 make ec2-apply
 CURSOR_API_KEY=... make put-secret-cursor-api-key
-GITHUB_PAT=... make put-secret-github-pat
+SCM_TOKEN=... make put-secret-scm-token
 ```
 
 Terraform creates the secret containers, IAM instance profile, no-inbound
@@ -38,7 +38,7 @@ does not store secret values in Terraform state.
 
 ```text
 bin/
-  git-credential-github-secretsmanager # fetches GitHub credentials from AWS Secrets Manager
+  git-credential-github-secretsmanager # fetches SCM credentials from AWS Secrets Manager
   cursor-worker-start              # starts one worker and cleans its worktree first
   cursor-workers-reconcile         # creates worktrees and systemd units without restarting active workers
   cursor-workers-autoscale         # adds/removes workers based on local idle capacity
@@ -60,7 +60,7 @@ examples/
 
 ## Design Notes
 
-- Use AWS Secrets Manager for long-lived credentials. Do not write service account keys, GitHub tokens, or repo `.env` files into git.
+- Use AWS Secrets Manager for long-lived credentials. Do not write service account keys, SCM tokens, or repo `.env` files into git.
 - Use one Secrets Manager secret per repo-local env/config file. Store the raw file body as `SecretString`; do not convert large `.env` files to JSON.
 - Use git worktrees for concurrent workers on one EC2 host. Each worker needs an isolated working directory, while the host still shares git object storage efficiently.
 - Reset and clean each worktree before worker registration so a released worker cannot leak dirty files into the next session.
@@ -73,7 +73,7 @@ Create these secrets in the same AWS region as the EC2 instance:
 
 ```text
 cursor/self-hosted-workers/cursor-api-key
-cursor/self-hosted-workers/github-pat
+cursor/self-hosted-workers/scm-token
 ```
 
 Optional repo tooling secrets (API keys for services in the worker checkout, for example image generation, audio generation, private package registries, or deployment previews):
@@ -128,7 +128,7 @@ Before installing the EC2 worker fleet:
 1. Enable self-hosted / private workers for the Cursor team.
 2. Connect the Cursor GitHub integration at the team level and authorize the target repo.
 3. Create a Cursor service account and store its API key in AWS Secrets Manager.
-4. Create a GitHub credential for the worker host, usually a fine-grained PAT with `Contents: Read and write` for the target repo, and store it in AWS Secrets Manager.
+4. Create a least-privilege HTTPS SCM token for the worker host and store it in AWS Secrets Manager.
 5. Turn on the team's self-hosted pool in the Cursor Cloud Agents dashboard.
 
 Pool names and labels are routing metadata, not a security boundary. Use separate Cursor teams, GitHub integrations, service accounts, and fleets when groups or customers need hard isolation from each other.
@@ -145,7 +145,9 @@ sudo apt-get install -y git curl ca-certificates jq awscli
 Install the Cursor agent CLI:
 
 ```bash
-curl -fsSL "https://www.cursor.com/install?channel=lab" | bash
+curl --proto '=https' --tlsv1.2 -fsSL "https://cursor.com/install" -o /tmp/install-cursor.sh
+bash /tmp/install-cursor.sh
+rm -f /tmp/install-cursor.sh
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 agent --version
@@ -179,8 +181,9 @@ Key customization values live in `/etc/cursor-workers/env`:
 ```bash
 AWS_REGION=us-east-1
 CURSOR_API_SECRET_ID=cursor/self-hosted-workers/cursor-api-key
-GITHUB_PAT_SECRET_ID=cursor/self-hosted-workers/github-pat
-GITHUB_HOST=github.com
+SCM_TOKEN_SECRET_ID=cursor/self-hosted-workers/scm-token
+SCM_HOST=github.com
+SCM_USERNAME=x-access-token
 CURSOR_WORKER_POOL_NAME=default
 CURSOR_WORKER_IDLE_RELEASE_TIMEOUT=900
 CURSOR_WORKER_USER=ubuntu
@@ -190,14 +193,14 @@ CURSOR_WORKERS_LABELS_FILE=/etc/cursor-workers/labels.json
 CURSOR_WORKERS_BASE_DIR=/opt/cursor-workers/base
 # Optional. Enable only after /etc/cursor-workers/repo-env-files contains real mappings.
 # CURSOR_REPO_ENV_FILES=/etc/cursor-workers/repo-env-files
-CURSOR_WORKER_CLEAN_MODE=normal
+CURSOR_WORKER_CLEAN_MODE=full
 CURSOR_AUTOSCALE_MIN_IDLE=1
 CURSOR_AUTOSCALE_SCALE_STEP=2
 CURSOR_AUTOSCALE_MAX_LOCAL_WORKERS=15
 CURSOR_METRICS_NAMESPACE=Cursor/SelfHostedWorkers
 ```
 
-Install the GitHub credential helper:
+Install the Secrets Manager-backed SCM credential helper:
 
 ```bash
 sudo install -m 755 bin/git-credential-github-secretsmanager /usr/local/bin/git-credential-github-secretsmanager
@@ -227,14 +230,14 @@ sudo systemctl enable --now cursor-workers-metrics.timer
 
 ## Worker Lifecycle
 
-Each worker is one `agent worker start --pool` process and one git working directory.
+Each worker is one `agent worker --pool ... start` process and one git working directory.
 
 Before a worker registers, `cursor-worker-start` resets its worktree:
 
 ```bash
 git fetch origin --prune
 git reset --hard origin/<branch>
-git clean -fd
+git clean -fdx
 ```
 
 That ensures the next session starts from the latest remote branch after the previous session releases and systemd restarts the worker.
@@ -270,16 +273,18 @@ CURSOR_AUTOSCALE_SCALE_DOWN_IDLE_SECONDS=3600
 CURSOR_AUTOSCALE_STATE_FILE=/var/lib/cursor-workers/autoscale-state.json
 ```
 
-It reads `/etc/cursor-workers/workers.json` and each local `/readyz` endpoint.
-If idle capacity is below `CURSOR_AUTOSCALE_MIN_IDLE`, it appends workers and
-calls `cursor-workers-reconcile`. If extra workers above
+It reads `/etc/cursor-workers/workers.json` and treats HTTP 200 from each local
+`/readyz` endpoint as connected and idle. If idle capacity is below
+`CURSOR_AUTOSCALE_MIN_IDLE`, it appends workers and calls
+`cursor-workers-reconcile`. If extra workers above
 `CURSOR_AUTOSCALE_BASE_WORKERS` have been idle for at least
 `CURSOR_AUTOSCALE_SCALE_DOWN_IDLE_SECONDS`, it removes at most
 `CURSOR_AUTOSCALE_SCALE_DOWN_STEP` worker per run.
 
-Scale-down only removes workers that are currently connected, unclaimed, and
-`status=ok`. It never removes workers at or below `CURSOR_AUTOSCALE_BASE_WORKERS`
-and it keeps at least `CURSOR_AUTOSCALE_MIN_IDLE` idle worker available.
+Scale-down only removes workers whose documented readiness endpoint returns
+HTTP 200. It never removes workers at or below
+`CURSOR_AUTOSCALE_BASE_WORKERS` and it keeps at least
+`CURSOR_AUTOSCALE_MIN_IDLE` idle worker available.
 Idle age is tracked in `CURSOR_AUTOSCALE_STATE_FILE`; if a worker becomes
 claimed or unready, its idle timer is cleared.
 
@@ -349,13 +354,14 @@ export CURSOR_API_KEY="$(aws secretsmanager get-secret-value \
   --query SecretString \
   --output text)"
 
-agent worker start --pool \
+agent worker \
+  --pool \
   --pool-name "$CURSOR_WORKER_POOL_NAME" \
   --worker-dir /opt/cursor-workers/worker-3 \
   --management-addr 127.0.0.1:8083 \
   --idle-release-timeout "$CURSOR_WORKER_IDLE_RELEASE_TIMEOUT" \
   --name ec2-worker-3 \
-  --verbose
+  start --verbose
 ```
 
 Use `--debug` instead of `--verbose` only when needed. Press `Ctrl+C` to stop
@@ -443,7 +449,7 @@ account fleet, or external self-hosted worker pool.
 
 ## Notes
 
-- Do not commit real API keys, GitHub tokens, `.pem` files, or `/etc/cursor-worker/api-key`.
+- Do not commit real API keys, SCM tokens, `.pem` files, or `/etc/cursor-worker/api-key`.
 - The Cursor service account key is used by worker processes. End users do not need this key.
 - Pool names and labels are routing/capacity metadata, not a security boundary.
 - Use separate Cursor teams, GitHub integrations, service accounts, and fleets for hard isolation between groups or customers.

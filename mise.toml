@@ -1,0 +1,29 @@
+[tools]
+terraform = "1.15.7"
+python = "3.13"
+shellcheck = "0.11.0"
+shfmt = "3.12.0"
+
+[tasks.build]
+description = "Build the generic Kubernetes worker image"
+run = "docker build -f kube/worker-image/Dockerfile kube/worker-image"
+
+[tasks.test]
+description = "Run repository contract and runtime tests"
+run = "python -m unittest discover -s tests -p 'test_*.py'"
+
+[tasks.lint]
+description = "Run report-only static validation"
+run = "scripts/validate.sh"
+
+[tasks.format-dryrun]
+description = "Check Terraform and shell formatting"
+run = "terraform fmt -check -recursive terraform && if command -v shfmt >/dev/null; then shfmt -d ec2/bin kube/worker-image scripts; fi"
+
+[tasks.lint-fix]
+description = "Apply safe Terraform and shell formatting fixes"
+run = "terraform fmt -recursive terraform && if command -v shfmt >/dev/null; then shfmt -w ec2/bin kube/worker-image scripts; fi"
+
+[tasks.format]
+description = "Format repository source files"
+depends = ["lint-fix"]

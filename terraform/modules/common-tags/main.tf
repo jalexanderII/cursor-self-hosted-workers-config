@@ -21,6 +21,8 @@ locals {
       Deployment  = var.deployment_name
       Environment = var.environment
       ManagedBy   = "terraform"
+      Service     = "cursor-agent-worker"
+      Platform    = "cursor"
     },
     var.extra_tags
   )

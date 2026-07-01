@@ -27,6 +27,9 @@ build/
 *.tfstate
 *.tfstate.*
 *.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
 crash.log
 crash.*.log
 override.tf
@@ -38,3 +41,9 @@ override.tf.json
 terraform/examples/**/rendered/
 rendered/
 workers.yaml
+
+# Local validation and supply-chain artifacts
+coverage/
+*.sarif
+*.sbom.json
+*.spdx.json
