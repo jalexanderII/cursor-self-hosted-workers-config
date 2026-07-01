@@ -54,11 +54,6 @@ ecr-build-push: ecr-login
 	docker buildx build \
 		--platform "$(WORKER_PLATFORM)" \
 		-f kube/worker-image/Dockerfile \
-		--build-arg BUILD_DATE="$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-		--build-arg VCS_REF="$$(git rev-parse HEAD)" \
-		--build-arg VERSION="$(WORKER_IMAGE_TAG)" \
-		--provenance=mode=max \
-		--sbom=true \
 		-t "$(ECR_WORKER_IMAGE)" \
 		--push \
 		kube/worker-image

@@ -15,12 +15,10 @@
 .idea/
 .vscode/
 
-# Logs and generated state
+# Logs and temp files
 *.log
 *.tmp
 tmp/
-dist/
-build/
 
 # Terraform local state and plans
 **/.terraform/
@@ -41,9 +39,3 @@ override.tf.json
 terraform/examples/**/rendered/
 rendered/
 workers.yaml
-
-# Local validation and supply-chain artifacts
-coverage/
-*.sarif
-*.sbom.json
-*.spdx.json

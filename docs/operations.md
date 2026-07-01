@@ -148,8 +148,8 @@ Check the EC2 instance profile or Kubernetes secret name. Terraform creates AWS
 secret containers, but values must be populated separately.
 
 Worker registers but Cloud Agents cannot use the repo:
-Confirm the Cursor GitHub App has access to the repo and the worker `REPO_SLUG`
-matches the Cloud Agent job repo.
+Confirm Cursor has authorized access to the repository and the worker
+`REPO_URL` / repository routing matches the Cloud Agent job.
 
 EKS pods are pending:
 Check CPU, memory, CNI IP capacity, taints, image pull errors, and node group
