@@ -14,11 +14,57 @@ spec:
     metadata:
       labels:
         app: ${app_label}
+%{ for key, value in kubernetes_labels ~}
+        ${key}: ${jsonencode(value)}
+%{ endfor ~}
+%{ if length(kubernetes_annotations) > 0 ~}
+      annotations:
+%{ for key, value in kubernetes_annotations ~}
+        ${key}: ${jsonencode(value)}
+%{ endfor ~}
+%{ endif ~}
     spec:
+      serviceAccountName: ${worker_service_account_name}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      terminationGracePeriodSeconds: ${termination_grace_period_seconds}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+%{ if node_selector_yaml != "" ~}
+      nodeSelector:
+        ${node_selector_yaml}
+%{ endif ~}
+%{ if tolerations_yaml != "" ~}
+      tolerations:
+        ${tolerations_yaml}
+%{ endif ~}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ${app_label}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ${app_label}
       containers:
         - name: worker
           image: ${worker_image}
-          imagePullPolicy: Always
+          imagePullPolicy: ${image_pull_policy}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: POD_NAME
               valueFrom:
@@ -28,15 +74,14 @@ spec:
               value: "$(POD_NAME)"
             - name: WORKER_DIR
               value: "/workspace/$(POD_NAME)"
-            - name: REPO_SLUG
-              value: ${repo_slug}
+            - name: REPO_URL
+              value: ${repo_url}
             - name: BRANCH
               value: ${repo_branch}
-            - name: GITHUB_PAT
-              valueFrom:
-                secretKeyRef:
-                  name: ${github_pat_secret_name}
-                  key: pat
+            - name: SCM_USERNAME
+              value: ${scm_username}
+            - name: SCM_TOKEN_FILE
+              value: /var/run/scm/token
             - name: CURSOR_WORKER_POOL_NAME
               value: ${worker_pool_name}
             - name: IDLE_RELEASE_TIMEOUT
@@ -47,12 +92,25 @@ spec:
             - name: REPO_ENV_MAPPINGS
               value: ${repo_env_mappings}
 %{ endif ~}
-%{ if repo_env_secret_name != "" ~}
           volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+            - name: scm-token
+              mountPath: /var/run/scm
+              readOnly: true
+%{ if repo_env_secret_name != "" ~}
             - name: repo-env
               mountPath: /repo-env
               readOnly: true
 %{ endif ~}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            failureThreshold: 60
+            periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /readyz
@@ -67,11 +125,26 @@ spec:
             requests:
               cpu: ${request_cpu}
               memory: ${request_memory}
+              ephemeral-storage: ${request_ephemeral_storage}
             limits:
               cpu: ${limit_cpu}
               memory: ${limit_memory}
-%{ if repo_env_secret_name != "" ~}
+              ephemeral-storage: ${limit_ephemeral_storage}
       volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: ${workspace_size_limit}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: scm-token
+          secret:
+            secretName: ${scm_token_secret_name}
+            items:
+              - key: ${scm_token_secret_key}
+                path: token
+                mode: 0440
+%{ if repo_env_secret_name != "" ~}
         - name: repo-env
           secret:
             secretName: ${repo_env_secret_name}

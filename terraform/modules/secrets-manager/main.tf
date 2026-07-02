@@ -3,8 +3,8 @@ variable "cursor_api_secret_name" {
   type        = string
 }
 
-variable "github_pat_secret_name" {
-  description = "Secrets Manager secret name for the GitHub PAT used by workers."
+variable "scm_token_secret_name" {
+  description = "Secrets Manager secret name for the HTTPS SCM token used by workers."
   type        = string
 }
 
@@ -20,6 +20,13 @@ variable "recovery_window_in_days" {
   default     = 30
 }
 
+variable "kms_key_id" {
+  description = "Optional customer-managed KMS key ID or ARN for secret encryption."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
 variable "tags" {
   description = "Tags applied to secret containers."
   type        = map(string)
@@ -30,13 +37,15 @@ resource "aws_secretsmanager_secret" "cursor_api_key" {
   name                    = var.cursor_api_secret_name
   description             = "Cursor service account API key for self-hosted Cloud Agent workers."
   recovery_window_in_days = var.recovery_window_in_days
+  kms_key_id              = var.kms_key_id
   tags                    = var.tags
 }
 
-resource "aws_secretsmanager_secret" "github_pat" {
-  name                    = var.github_pat_secret_name
-  description             = "GitHub PAT used by self-hosted Cloud Agent workers."
+resource "aws_secretsmanager_secret" "scm_token" {
+  name                    = var.scm_token_secret_name
+  description             = "HTTPS SCM token used by self-hosted Cloud Agent workers."
   recovery_window_in_days = var.recovery_window_in_days
+  kms_key_id              = var.kms_key_id
   tags                    = var.tags
 }
 
@@ -46,6 +55,7 @@ resource "aws_secretsmanager_secret" "repo_env" {
   name                    = each.value
   description             = "Repo-local env/config file for self-hosted Cursor workers."
   recovery_window_in_days = var.recovery_window_in_days
+  kms_key_id              = var.kms_key_id
   tags                    = var.tags
 }
 
@@ -59,14 +69,14 @@ output "cursor_api_secret_arn" {
   value       = aws_secretsmanager_secret.cursor_api_key.arn
 }
 
-output "github_pat_secret_name" {
-  description = "GitHub PAT secret name."
-  value       = aws_secretsmanager_secret.github_pat.name
+output "scm_token_secret_name" {
+  description = "SCM token secret name."
+  value       = aws_secretsmanager_secret.scm_token.name
 }
 
-output "github_pat_secret_arn" {
-  description = "GitHub PAT secret ARN."
-  value       = aws_secretsmanager_secret.github_pat.arn
+output "scm_token_secret_arn" {
+  description = "SCM token secret ARN."
+  value       = aws_secretsmanager_secret.scm_token.arn
 }
 
 output "repo_env_secret_arns" {

@@ -1,0 +1,66 @@
+# Optional platform objects when you are not using the Terraform eks-workers
+# module (that module creates these for you). The app label must match the
+# WorkerDeployment pod template (default cursor-workers).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cursord
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cursor-worker
+  namespace: cursord
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cursor-worker-capacity
+  namespace: cursord
+spec:
+  hard:
+    pods: "100"
+    requests.cpu: "100"
+    requests.memory: 200Gi
+    requests.ephemeral-storage: 2Ti
+    limits.cpu: "400"
+    limits.memory: 800Gi
+    limits.ephemeral-storage: 5Ti
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cursor-worker-baseline
+  namespace: cursord
+spec:
+  podSelector:
+    matchLabels:
+      app: cursor-workers
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

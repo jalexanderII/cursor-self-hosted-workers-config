@@ -1,83 +1,84 @@
-# Cursor Self-Hosted Cloud Agents Templates
+# Cursor Self-Hosted Cloud Agent Pools on AWS
 
-Production-oriented templates for running Cursor self-hosted Cloud Agent workers
-on customer-managed AWS infrastructure.
+Reference templates for running Cursor Self-Hosted Pool workers on customer-managed
+EC2 or EKS. Copy what you need, adapt it to your platform standards, and ignore
+the rest.
 
-The repo has two layers:
-
-- Runtime assets in [`ec2/`](ec2/) and [`kube/`](kube/) that define how workers
-  start, clean workspaces, scale, and report health.
-- Terraform examples in [`terraform/examples/`](terraform/examples/) that make
-  those runtime assets repeatable for EC2 Auto Scaling Groups and EKS.
-
-Cursor still owns orchestration, model inference, and the Cloud Agents user
-experience. These workers connect outbound to Cursor over HTTPS and run inside
-your AWS account so they can reach your repos and private services.
+Cursor runs the agent loop, orchestration, model inference, and worker routing.
+Your organization owns the worker filesystem, images, compute, credentials,
+network policy, monitoring, capacity, and incident response. Workers use outbound
+HTTPS only. Pool names, labels, namespaces, and Linux users are not hard
+tenant-isolation boundaries.
 
 ## Deployment paths
 
-| Path | Use when | Start here |
-| --- | --- | --- |
-| EC2 Auto Scaling Group | You want a small AWS footprint with systemd workers, git worktrees, local autoscaling, and CloudWatch metrics. | [`docs/aws-ec2-asg.md`](docs/aws-ec2-asg.md) |
-| Existing EKS cluster | You already have a production EKS/VPC baseline and want to add Cursor workers. | [`docs/aws-eks-existing-cluster.md`](docs/aws-eks-existing-cluster.md) |
-| New EKS cluster | You want this repo to create a baseline EKS cluster before installing workers. | [`docs/aws-eks-new-cluster.md`](docs/aws-eks-new-cluster.md) |
+- **Existing EKS cluster:** [`docs/aws-eks-existing-cluster.md`](docs/aws-eks-existing-cluster.md)
+- **New EKS cluster:** [`docs/aws-eks-new-cluster.md`](docs/aws-eks-new-cluster.md)
+- **EC2 Auto Scaling Group:** [`docs/aws-ec2-asg.md`](docs/aws-ec2-asg.md)
 
-## Quick start
+Also see Cursor's
+[self-hosted cookbook](https://github.com/cursor/cookbook/tree/main/self-hosted-cloud-agent)
+for additional platform examples.
 
-Copy the local environment template:
+## Prerequisites
+
+- Cursor Enterprise with Self-Hosted Agents enabled
+- A Cursor service account API key for the worker pool
+- An HTTPS SCM credential scoped to the repositories you need
+- AWS credentials for the resources you create
+- Terraform, AWS CLI, and the tools listed in each runbook
+
+## Secret handling
+
+Do not put secret values in `.env`, Terraform variables, command arguments, or
+git. Pass `CURSOR_API_KEY` and `SCM_TOKEN` only to the Make targets that write
+them. Terraform creates secret containers and references, not secret values.
+
+## EKS quick start
 
 ```bash
 cp .env.example .env
+make eks-cluster-init
+make eks-cluster-plan
+make eks-cluster-apply
+eval "$(terraform -chdir=terraform/examples/eks-new-cluster output -raw update_kubeconfig_command)"
+make eks-workers-init
+make eks-workers-plan
+make eks-workers-apply
+make ecr-build-push
+CURSOR_API_KEY=... make kube-create-api-key-secret
+SCM_TOKEN=... make kube-create-scm-secret
+make kube-apply-rendered
+make kube-status
 ```
 
-Edit `.env` for your AWS account, repo, Cursor worker pool, and secret names.
-Secret values such as `CURSOR_API_KEY` and `GITHUB_PAT` belong only in your local
-`.env` or shell.
+Skip the cluster targets when you already have an EKS cluster. Worker pods
+default to the dedicated node label and toleration used by the new-cluster
+node group. On a shared node pool, set `worker_node_selector = {}` and
+`worker_tolerations = []` before apply.
 
-Create the AWS secret containers with Terraform, then populate the secret values
-outside Terraform:
+## EC2 quick start
+
+Set an explicit VPC, private subnets, and AMI ID in `terraform.tfvars`, then:
 
 ```bash
+cp terraform/examples/ec2-asg/terraform.tfvars.example \
+  terraform/examples/ec2-asg/terraform.tfvars
 make ec2-init
 make ec2-plan
 make ec2-apply
-make put-secret-cursor-api-key
-make put-secret-github-pat
+CURSOR_API_KEY=... make put-secret-cursor-api-key
+SCM_TOKEN=... make put-secret-scm-token
 ```
 
-For EKS, build and push the worker image before applying the rendered worker
-manifest:
+Hosts are protected from ASG scale-in. Drain with
+`/usr/local/bin/cursor-workers-drain` through SSM before reducing capacity.
 
-```bash
-make ecr-build-push
-make eks-workers-init
-make eks-workers-plan
-```
+## Docs
 
-## What is production-ready here
-
-- Terraform modules for ECR, Secrets Manager, EC2 ASGs, EKS clusters, worker
-  controller installation, and EC2 CloudWatch dashboards.
-- EC2 workers run under systemd with clean git worktrees, conservative local
-  autoscaling, and per-instance CloudWatch metrics.
-- EKS workers use Cursor's official `worker-set-controller`, short-lived worker
-  tokens, fresh pod-local clones, readiness probes, liveness probes, and resource
-  requests.
-- Secrets are deliberately a two-step flow. Terraform creates names, ARNs, IAM,
-  and Kubernetes references; secret values are written with AWS CLI or `kubectl`
-  so they do not land in Terraform state.
-
-## Existing manual templates
-
-The original hand-run guides are still useful when debugging or adapting the
-runtime behavior directly:
-
-- [`ec2/`](ec2/) - EC2 systemd worker fleet, worktrees, local autoscaling, and
-  CloudWatch metrics.
-- [`kube/`](kube/) - Kubernetes/EKS worker image and `WorkerDeployment` example.
-
-## Operations and security
-
-Read [`docs/security.md`](docs/security.md) before deploying into a shared AWS
-account. Read [`docs/operations.md`](docs/operations.md) for rotation, scaling,
-rollouts, rollback, and cleanup.
+- [`docs/architecture.md`](docs/architecture.md): control plane vs worker boundary
+- [`docs/security.md`](docs/security.md): isolation and credentials
+- [`docs/networking.md`](docs/networking.md): required egress
+- [`docs/finops.md`](docs/finops.md): usage vs infrastructure chargeback
+- [`docs/disaster-recovery.md`](docs/disaster-recovery.md): ephemeral workers and rebuild
+- [`docs/operations.md`](docs/operations.md): rotate, scale, drain, tear down

@@ -1,92 +1,96 @@
-# Security model
+# Security
 
-Cursor self-hosted workers run inside your AWS account and connect outbound to
-Cursor over HTTPS. Cursor still handles orchestration and model inference. The
-worker environment is where repo clone, tool execution, tests, builds, and
-private network access happen.
+Treat self-hosted workers like privileged CI runners on potentially adversarial
+repository content. They can run shell, edit files, use local MCP, and reach
+whatever their network and credentials allow.
 
-## Secrets
+## Trust boundary
 
-Do not commit service account keys, GitHub tokens, kubeconfigs, or repo `.env`
-files.
+Cursor runs the agent loop and inference. Workers run in your environment and
+connect outbound over HTTPS.
 
-Terraform creates AWS Secrets Manager secret containers but does not set secret
-values. Populate values through AWS CLI or your normal secret-management
-workflow:
+May leave your network in normal operation:
 
-```bash
-CURSOR_API_KEY=... make put-secret-cursor-api-key
-GITHUB_PAT=... make put-secret-github-pat
-```
+- file contents selected for inference
+- tool output, diffs, and command results
+- artifacts (for example screenshots or logs)
+- worker metadata used for routing and health
 
-For Kubernetes, copy secret values into Kubernetes Secrets only after Terraform
-has installed the namespace and controller:
-
-```bash
-CURSOR_API_KEY=... make kube-create-api-key-secret
-GITHUB_PAT=... make kube-create-github-secret
-```
-
-Repo env/config files should be stored as raw file bodies. Do not convert large
-`.env` files into JSON unless your own tooling requires that.
-
-## IAM
-
-EC2 workers receive an instance profile that can:
-
-- read the configured Cursor API key secret
-- read the configured GitHub PAT secret
-- read optional repo env/config secrets
-- publish CloudWatch metrics to `Cursor/SelfHostedWorkers`
-- use SSM Session Manager
-
-The EC2 role does not need write access to Secrets Manager.
-
-EKS worker pods read Kubernetes Secrets. The controller exchanges the long-lived
-Cursor service account API key for short-lived worker tokens mounted at
-`/var/run/cursor/token`.
-
-## Network
-
-The EC2 security group has no inbound rules. Administration is through SSM.
-
-Workers need outbound HTTPS to:
-
-- Cursor APIs and artifact hosts
-- GitHub or your git host
-- package registries used by your repo
-- AWS APIs for Secrets Manager, ECR, SSM, and CloudWatch
-- private services your tests or build steps call
-
-The Terraform defaults allow outbound HTTPS and DNS to `0.0.0.0/0`. Tighten
-`egress_cidr_blocks` or attach your own egress controls when you have a known
-network policy.
+Clones, caches, and customer-managed secrets stay on the worker unless a
+command, tool, or dependency transmits them. Privacy Mode governs Cursor's use
+of code data; it does not replace identity, sandboxing, or egress controls on your
+side.
 
 ## Isolation
 
-Pool names and Cursor labels are routing metadata, not security boundaries. Use
-separate Cursor teams, service accounts, GitHub integrations, AWS accounts,
-VPCs, clusters, or worker fleets when tenants need hard isolation.
+Pools, Cursor labels, Kubernetes namespaces, and Linux users are labels and
+scheduling boundaries, not hard multi-tenant security boundaries.
 
-## Kubernetes hardening
+For a shared cluster, keep one organizational trust boundary and give each
+security or chargeback domain its own namespace, `WorkerDeployment`, Cursor
+service account, Kubernetes ServiceAccount / IAM role, secrets, NetworkPolicy,
+and quota (dedicated nodes when practical).
 
-The worker image runs as a non-root user. Production clusters should also apply
-your standard controls:
+Use a dedicated cluster or AWS account when administrators differ, namespace
+compromise must not affect another tenant, or shared kernel / IAM / storage risk
+is unacceptable.
 
-- restricted namespaces and RBAC
-- Pod Security Admission or equivalent policy
-- network policies or egress controls where supported
-- image scanning and pinned image tags
-- node group separation if workers should not colocate with other workloads
+On EC2, multi-slot hosts share kernel, instance profile, and git objects.
+Default is one worker per host.
 
-## Rotation
+## Credentials
 
-Rotate the Cursor service account API key and GitHub PAT from their source
-systems, then update AWS Secrets Manager and Kubernetes Secrets.
+**Kubernetes:** a labeled Secret holds the Cursor service account API key. The
+controller exchanges it for short-lived tokens mounted at
+`/var/run/cursor/token` for the worker container only. The CLI rereads the file
+on reconnect so tokens can rotate without restarting the pod.
 
-EC2 workers read secrets when worker processes start. Restart idle worker
-services or roll the ASG to pick up new values.
+**EC2:** the service account key is read from Secrets Manager at process start
+and is available to that process. Use a dedicated service account per trust
+domain.
 
-Kubernetes workers use controller-managed Cursor tokens, but the controller
-still needs the updated API key secret. Update the secret and restart worker pods
-if they do not rotate automatically.
+An agent can use any credential available to its worker. Scope credentials
+narrowly, prefer file mounts over env vars, prefer workload identity over static
+cloud keys, and keep audit logs at SCM, CloudTrail, and registries.
+
+Terraform creates secret *containers*, not values:
+
+```bash
+CURSOR_API_KEY=... make put-secret-cursor-api-key
+SCM_TOKEN=... make put-secret-scm-token
+# Kubernetes:
+CURSOR_API_KEY=... make kube-create-api-key-secret
+SCM_TOKEN=... make kube-create-scm-secret
+```
+
+Helpers read from stdin so values are not process arguments. The External
+Secrets example assumes your platform already runs ESO; this repo does not
+install it.
+
+## IAM and hosts
+
+EC2 roles grant only: Secrets Manager reads for configured ARNs, CloudWatch
+metrics in the configured namespace, SSM Session Manager, and removing that
+instance's own scale-in protection after drain. Code on the host can still use
+that role; isolate untrusted work in separate accounts or fleets if needed.
+
+Kubernetes workers set `automountServiceAccountToken: false`. Add IRSA or Pod
+Identity only when the workload needs AWS APIs.
+
+Baseline pod settings: restricted Pod Security, non-root, `RuntimeDefault`
+seccomp, no privilege escalation, dropped capabilities, bounded ephemeral
+storage. EC2 baseline: IMDSv2, no inbound security-group rules, SSM admin,
+encrypted EBS, scale-in protection, systemd hardening.
+
+Destination allowlists: see [`networking.md`](networking.md). Security groups and
+portable NetworkPolicy cannot express FQDNs; use a proxy, network firewall, CNI
+FQDN policy, or mesh egress gateway.
+
+## Data and response
+
+Kubernetes workspaces are `emptyDir`. Do not share an RWX volume across trust
+domains. EC2 defaults to `git clean -fdx` before registration.
+
+On incident: rotate Cursor and SCM credentials at source, update Secrets Manager
+/ synced K8s secrets, drain EC2 hosts or set `readyReplicas: 0`, revoke old
+credentials, and retain centralized logs before tearing infrastructure down.

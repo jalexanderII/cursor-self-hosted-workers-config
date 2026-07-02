@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # Start exactly one Cursor pool worker.
 #
@@ -22,7 +23,13 @@ BRANCH="$(jq -r '.branch' "$MANIFEST")"
 AGENT_BIN="${CURSOR_AGENT_BIN:-/home/ubuntu/.local/bin/agent}"
 LABELS_FILE="${CURSOR_WORKERS_LABELS_FILE:-/etc/cursor-workers/labels.json}"
 LOCK_FILE="${CURSOR_WORKERS_GIT_CLEAN_LOCK:-/tmp/cursor-worker-git-cleanup.lock}"
-CLEAN_MODE="${CURSOR_WORKER_CLEAN_MODE:-normal}"
+CLEAN_MODE="${CURSOR_WORKER_CLEAN_MODE:-full}"
+DRAIN_MARKER="${CURSOR_WORKERS_DRAIN_MARKER:-/run/cursor-workers/draining}"
+
+if [ -e "$DRAIN_MARKER" ]; then
+  echo "worker host is draining; refusing to start new worker capacity" >&2
+  exit 0
+fi
 
 echo "Preparing clean worker workspace: ${CURSOR_WORKER_DIR} -> origin/${BRANCH}"
 
@@ -80,7 +87,7 @@ inject_repo_env_files() {
 
   echo "Injecting repo env files from ${mapping_file}"
 
-  local target_rel secret_id extra target_dir target
+  local target_rel secret_id extra target_dir target target_tmp
   while read -r target_rel secret_id extra; do
     if [ -z "${target_rel:-}" ] || [[ "$target_rel" == \#* ]]; then
       continue
@@ -93,7 +100,12 @@ inject_repo_env_files() {
       echo "Invalid repo env mapping line for ${target_rel}: expected exactly two fields" >&2
       exit 1
     fi
-    if [[ "$target_rel" == /* ]] || [[ "$target_rel" == *".."* ]] || [[ "$target_rel" == */ ]]; then
+    if [[ "$target_rel" == /* ]] ||
+      [[ "$target_rel" == ".." ]] ||
+      [[ "$target_rel" == ../* ]] ||
+      [[ "$target_rel" == */../* ]] ||
+      [[ "$target_rel" == */.. ]] ||
+      [[ "$target_rel" == */ ]]; then
       echo "Invalid repo env target path: ${target_rel}" >&2
       exit 1
     fi
@@ -101,16 +113,18 @@ inject_repo_env_files() {
     target="${CURSOR_WORKER_DIR}/${target_rel}"
     target_dir="$(dirname "$target")"
     mkdir -p "$target_dir"
+    target_tmp="$(mktemp "${target}.tmp.XXXXXX")"
     if ! aws secretsmanager get-secret-value \
       --region "$AWS_REGION" \
       --secret-id "$secret_id" \
       --query SecretString \
-      --output text >"$target"; then
-      rm -f "$target"
+      --output text >"$target_tmp"; then
+      rm -f "$target_tmp"
       echo "Failed to fetch repo env secret for ${target_rel}: ${secret_id}" >&2
       exit 1
     fi
-    chmod 600 "$target"
+    install -m 0600 "$target_tmp" "$target"
+    rm -f "$target_tmp"
   done < "$mapping_file"
 }
 
@@ -128,12 +142,12 @@ export CURSOR_API_KEY
 
 # Keep the command in an array so optional flags can be appended safely.
 cmd=(
-  "$AGENT_BIN" worker start
-  --pool \
-  --pool-name "$CURSOR_WORKER_POOL_NAME" \
-  --worker-dir "$CURSOR_WORKER_DIR" \
-  --management-addr "127.0.0.1:${CURSOR_WORKER_PORT}" \
-  --idle-release-timeout "$CURSOR_WORKER_IDLE_RELEASE_TIMEOUT" \
+  "$AGENT_BIN" worker
+  --pool
+  --pool-name "$CURSOR_WORKER_POOL_NAME"
+  --worker-dir "$CURSOR_WORKER_DIR"
+  --management-addr "127.0.0.1:${CURSOR_WORKER_PORT}"
+  --idle-release-timeout "$CURSOR_WORKER_IDLE_RELEASE_TIMEOUT"
   --name "$CURSOR_WORKER_NAME"
 )
 
@@ -142,4 +156,5 @@ if [ -f "$LABELS_FILE" ]; then
   cmd+=(--labels-file "$LABELS_FILE")
 fi
 
+cmd+=(start)
 exec "${cmd[@]}"

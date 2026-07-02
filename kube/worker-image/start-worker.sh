@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # This script runs as PID 1 inside each worker pod.
 #
@@ -14,8 +15,7 @@ set -euo pipefail
 # - The worker name and worker directory should use the pod name. If every pod
 #   uses /workspace/repo, the Cursor UI displays every worker as "repo".
 
-: "${GITHUB_PAT:?missing GITHUB_PAT}"
-: "${REPO_SLUG:?missing REPO_SLUG, for example owner/repo}"
+: "${REPO_URL:?missing REPO_URL, for example https://github.com/owner/repo.git}"
 : "${BRANCH:=main}"
 : "${CURSOR_WORKER_POOL_NAME:=default}"
 : "${IDLE_RELEASE_TIMEOUT:=900}"
@@ -23,6 +23,20 @@ set -euo pipefail
 : "${REPO_ENV_DIR:=/repo-env}"
 : "${REPO_ENV_MAPPINGS:=}"
 : "${CURSOR_WORKER_LABELS:=}"
+: "${SCM_USERNAME:=x-access-token}"
+: "${SCM_TOKEN_FILE:=/var/run/scm/token}"
+
+case "$REPO_URL" in
+  https://*@*)
+    echo "REPO_URL must not embed credentials; use SCM_TOKEN_FILE" >&2
+    exit 1
+    ;;
+  https://*) ;;
+  *)
+    echo "REPO_URL must use HTTPS" >&2
+    exit 1
+    ;;
+esac
 
 # This script deletes and recreates WORKER_DIR every pod start. Keep it scoped
 # under /workspace so a bad env var cannot remove arbitrary filesystem paths.
@@ -36,20 +50,27 @@ esac
 
 rm -rf "$WORKER_DIR"
 
-# Use GIT_ASKPASS so the PAT is not written into the git remote URL or a file.
+if [ ! -r "$SCM_TOKEN_FILE" ]; then
+  echo "SCM token file is not readable: ${SCM_TOKEN_FILE}" >&2
+  exit 1
+fi
+
+# Use GIT_ASKPASS so the token is not written into the git remote URL.
 askpass="$(mktemp)"
 trap 'rm -f "$askpass"' EXIT
 cat > "$askpass" <<'ASKPASS'
 #!/usr/bin/env sh
 case "$1" in
-  *Username*) echo "x-access-token" ;;
-  *Password*) printf '%s\n' "$GITHUB_PAT" ;;
+  *Username*) printf '%s\n' "$SCM_USERNAME" ;;
+  *Password*) cat "$SCM_TOKEN_FILE" ;;
   *) echo "" ;;
 esac
 ASKPASS
 chmod 700 "$askpass"
 
-GIT_ASKPASS="$askpass" git clone --branch "$BRANCH" "https://github.com/${REPO_SLUG}.git" "$WORKER_DIR"
+export SCM_USERNAME SCM_TOKEN_FILE
+GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+  git clone --branch "$BRANCH" "$REPO_URL" "$WORKER_DIR"
 rm -f "$askpass"
 trap - EXIT
 
@@ -72,7 +93,16 @@ if [ -n "$REPO_ENV_MAPPINGS" ]; then
       echo "Invalid REPO_ENV_MAPPINGS entry: ${mapping}" >&2
       exit 1
     fi
-    if [[ "$target_rel" == /* ]] || [[ "$target_rel" == *".."* ]] || [[ "$target_rel" == */ ]]; then
+    if [[ "$source_name" == */* ]] || [[ "$source_name" == "." ]] || [[ "$source_name" == ".." ]]; then
+      echo "Invalid mounted secret file name: ${source_name}" >&2
+      exit 1
+    fi
+    if [[ "$target_rel" == /* ]] ||
+      [[ "$target_rel" == ".." ]] ||
+      [[ "$target_rel" == ../* ]] ||
+      [[ "$target_rel" == */../* ]] ||
+      [[ "$target_rel" == */.. ]] ||
+      [[ "$target_rel" == */ ]]; then
       echo "Invalid repo env target path: ${target_rel}" >&2
       exit 1
     fi
@@ -81,9 +111,12 @@ if [ -n "$REPO_ENV_MAPPINGS" ]; then
       exit 1
     fi
 
-    mkdir -p "$(dirname "${WORKER_DIR}/${target_rel}")"
-    cp "${REPO_ENV_DIR}/${source_name}" "${WORKER_DIR}/${target_rel}"
-    chmod 600 "${WORKER_DIR}/${target_rel}"
+    target="${WORKER_DIR}/${target_rel}"
+    mkdir -p "$(dirname "$target")"
+    target_tmp="$(mktemp "${target}.tmp.XXXXXX")"
+    cp "${REPO_ENV_DIR}/${source_name}" "$target_tmp"
+    install -m 0600 "$target_tmp" "$target"
+    rm -f "$target_tmp"
   done
 fi
 
@@ -96,6 +129,10 @@ cmd=(
   --auth-token-file /var/run/cursor/token
   --management-addr 0.0.0.0:8080
 )
+
+if [ -n "${CURSOR_WORKER_NAME:-}" ]; then
+  cmd+=(--name "$CURSOR_WORKER_NAME")
+fi
 
 # Cursor labels are different from Kubernetes pod labels. Use these for routing
 # or visibility in Cursor. Do not set reserved labels manually: repo and pool.

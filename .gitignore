@@ -15,18 +15,19 @@
 .idea/
 .vscode/
 
-# Logs and generated state
+# Logs and temp files
 *.log
 *.tmp
 tmp/
-dist/
-build/
 
 # Terraform local state and plans
 **/.terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
 crash.log
 crash.*.log
 override.tf

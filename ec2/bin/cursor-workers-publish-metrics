@@ -20,7 +20,18 @@ TOKEN="$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
 INSTANCE_ID="$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" \
   "http://169.254.169.254/latest/meta-data/instance-id")"
 
-REPO="$(jq -r '.repo' "$MANIFEST")"
+# CloudWatch Repo dimension is the path (owner/repo), derived from repoUrl.
+REPO_URL="$(jq -r '.repoUrl // empty' "$MANIFEST")"
+case "$REPO_URL" in
+  https://*)
+    REPO="${REPO_URL#https://*/}"
+    REPO="${REPO%.git}"
+    ;;
+  *)
+    echo "workers.json must set repoUrl to an HTTPS clone URL" >&2
+    exit 1
+    ;;
+esac
 
 total=0
 ready=0
@@ -41,35 +52,37 @@ while read -r worker; do
     continue
   fi
 
-  body="$(curl -s --max-time 2 "http://127.0.0.1:${port}/readyz" || true)"
-
-  # ReadyWorkers are idle and immediately available for a new agent session.
-  if echo "$body" | jq -e '.connected == true and .claimed == false and .status == "ok"' >/dev/null 2>&1; then
+  # /readyz HTTP 200 is the public contract for a connected, idle worker.
+  if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${port}/readyz"; then
     ready=$((ready + 1))
   fi
 
-  # ClaimedWorkers include active sessions and workers held for follow-up during
-  # the idle-release timeout window.
-  if echo "$body" | jq -e '.claimed == true' >/dev/null 2>&1; then
+  # Active-session state comes from the documented Prometheus endpoint instead
+  # of relying on the non-contractual JSON body returned by /readyz.
+  metrics="$(curl -fsS --max-time 2 "http://127.0.0.1:${port}/metrics" || true)"
+  if awk '$1 == "cursor_self_hosted_worker_session_active" && $2 == "1" { found=1 } END { exit !found }' <<<"$metrics"; then
     claimed=$((claimed + 1))
   fi
 done < <(jq -c '.workers[]' "$MANIFEST")
 
-# Emit separate metric names so CloudWatch alarms and dashboards can be built
-# without parsing dimensions or logs.
-for metric in TotalWorkers ReadyWorkers ClaimedWorkers FailedWorkerServices; do
-  case "$metric" in
-    TotalWorkers) value="$total" ;;
-    ReadyWorkers) value="$ready" ;;
-    ClaimedWorkers) value="$claimed" ;;
-    FailedWorkerServices) value="$failed" ;;
-  esac
+# Publish all values in one CloudWatch API request.
+metric_data="$(
+  jq -n \
+    --arg instance_id "$INSTANCE_ID" \
+    --arg repo "$REPO" \
+    --argjson total "$total" \
+    --argjson ready "$ready" \
+    --argjson active "$claimed" \
+    --argjson failed "$failed" \
+    '[
+      {MetricName:"TotalWorkers",Dimensions:[{Name:"InstanceId",Value:$instance_id},{Name:"Repo",Value:$repo}],Unit:"Count",Value:$total},
+      {MetricName:"ReadyWorkers",Dimensions:[{Name:"InstanceId",Value:$instance_id},{Name:"Repo",Value:$repo}],Unit:"Count",Value:$ready},
+      {MetricName:"ActiveWorkers",Dimensions:[{Name:"InstanceId",Value:$instance_id},{Name:"Repo",Value:$repo}],Unit:"Count",Value:$active},
+      {MetricName:"FailedWorkerServices",Dimensions:[{Name:"InstanceId",Value:$instance_id},{Name:"Repo",Value:$repo}],Unit:"Count",Value:$failed}
+    ]'
+)"
 
-  aws cloudwatch put-metric-data \
-    --region "$AWS_REGION" \
-    --namespace "$METRICS_NAMESPACE" \
-    --metric-name "$metric" \
-    --dimensions "InstanceId=${INSTANCE_ID},Repo=${REPO}" \
-    --unit Count \
-    --value "$value"
-done
+aws cloudwatch put-metric-data \
+  --region "$AWS_REGION" \
+  --namespace "$METRICS_NAMESPACE" \
+  --metric-data "$metric_data"

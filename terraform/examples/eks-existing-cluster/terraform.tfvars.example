@@ -6,18 +6,23 @@ kubeconfig_path = "~/.kube/config"
 kube_context    = "arn:aws:eks:us-east-1:ACCOUNT_ID:cluster/cursor-workers"
 
 ecr_repository_name = "cursor-self-hosted-worker"
-worker_image_tag    = "latest"
+worker_image_tag    = "release-2026-07-01"
+# manage_ecr_repository      = false
+# existing_ecr_repository_url = "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/cursor-worker"
 
 cursor_api_secret_name = "cursor/self-hosted-workers/cursor-api-key"
-github_pat_secret_name = "cursor/self-hosted-workers/github-pat"
+scm_token_secret_name  = "cursor/self-hosted-workers/scm-token"
+# manage_aws_secret_containers = false # when managed by the platform team
 
 k8s_namespace             = "cursord"
+pod_security_version      = "v1.35"
 worker_deployment_name   = "cursor-workers"
 cursor_api_key_secret_name = "cursor-workers-api-key"
-github_pat_secret_name_k8s = "cursor-workers-github"
+scm_token_secret_name_k8s  = "cursor-workers-scm"
 
-repo_slug             = "YOUR_ORG/YOUR_REPO"
+repo_url              = "https://github.com/YOUR_ORG/YOUR_REPO.git"
 repo_branch           = "main"
+scm_username          = "x-access-token"
 worker_pool_name      = "prod-eks"
 worker_ready_replicas = 3
 
@@ -25,3 +30,23 @@ worker_labels = {
   env      = "prod"
   platform = "kubernetes"
 }
+
+kubernetes_labels = {
+  environment = "prod"
+  service     = "cursor-agent-worker"
+  cost-center = "REPLACE_ME"
+  owner       = "REPLACE_ME"
+}
+
+# Defaults match the dedicated node group from eks-new-cluster. Clear both for
+# a shared node pool: worker_node_selector = {} and worker_tolerations = [].
+worker_node_selector = {
+  "cursor.com/workload" = "cloud-agent-worker"
+}
+
+worker_tolerations = [{
+  key      = "cursor.com/workload"
+  operator = "Equal"
+  value    = "cloud-agent-worker"
+  effect   = "NoSchedule"
+}]

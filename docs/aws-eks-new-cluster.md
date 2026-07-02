@@ -27,11 +27,17 @@ Edit:
 
 ```hcl
 eks_cluster_name        = "cursor-workers"
+eks_cluster_version     = "1.35"
 eks_vpc_cidr            = "10.40.0.0/16"
+eks_admin_principal_arn = "arn:aws:iam::ACCOUNT_ID:role/PlatformAdmin"
 eks_node_instance_types = ["m6i.xlarge"]
 eks_node_desired_size   = 3
 eks_node_max_size       = 10
 ```
+
+The production profile enables the private Kubernetes API endpoint, disables
+implicit cluster-creator admin, and requires an explicit administrator access
+entry. Run Terraform from a network path that can reach the private endpoint.
 
 The module creates private worker subnets and NAT egress. Set
 `eks_single_nat_gateway = true` only when cost matters more than AZ-level NAT
@@ -45,10 +51,10 @@ make eks-cluster-plan
 make eks-cluster-apply
 ```
 
-Configure kubectl using the Terraform output:
+Configure kubectl by executing the Terraform output:
 
 ```bash
-terraform -chdir=terraform/examples/eks-new-cluster output update_kubeconfig_command
+eval "$(terraform -chdir=terraform/examples/eks-new-cluster output -raw update_kubeconfig_command)"
 ```
 
 Then build and push the worker image:
@@ -72,6 +78,18 @@ CPU or memory, either:
 - install Cluster Autoscaler or Karpenter
 - lower `worker_ready_replicas`
 - lower pod resource requests only if your repo workload can tolerate it
+
+The node group is dedicated to Cursor workers by default through a node label
+`cursor.com/workload=cloud-agent-worker` and a `NoSchedule` taint of the same
+key. The workers example defaults to matching nodeSelector and tolerations, so
+pods schedule onto that node group when you continue with
+`aws-eks-existing-cluster.md`. Clear both `worker_node_selector` and
+`worker_tolerations` only when you intentionally use a shared node pool that is
+not tainted.
+
+Before choosing a Kubernetes version, verify that it remains in EKS standard
+support. Avoid paid extended-support defaults and plan minor-version upgrades
+before the standard-support deadline.
 
 ## Cleanup
 

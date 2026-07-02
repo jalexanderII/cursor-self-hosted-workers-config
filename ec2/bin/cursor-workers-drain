@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+# Safely prepare an EC2 worker host for ASG scale-in or instance refresh.
+# New local capacity stops first. The script then waits until every worker is
+# documented-ready (HTTP 200 from /readyz), stops the worker services, and only
+# then removes ASG scale-in protection.
+
+set -a
+# shellcheck source=/dev/null
+. /etc/cursor-workers/env
+set +a
+
+MANIFEST="${CURSOR_WORKERS_MANIFEST:-/etc/cursor-workers/workers.json}"
+DRAIN_MARKER="${CURSOR_WORKERS_DRAIN_MARKER:-/run/cursor-workers/draining}"
+DRAIN_TIMEOUT_SECONDS="${CURSOR_DRAIN_TIMEOUT_SECONDS:-7200}"
+POLL_SECONDS="${CURSOR_DRAIN_POLL_SECONDS:-10}"
+ASG_NAME="${CURSOR_ASG_NAME:?CURSOR_ASG_NAME must be configured}"
+
+mkdir -p "$(dirname "$DRAIN_MARKER")"
+touch "$DRAIN_MARKER"
+systemctl stop cursor-workers-autoscale.timer || true
+
+token="$(curl -fsS --max-time 2 -X PUT \
+  "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")"
+instance_id="$(curl -fsS --max-time 2 \
+  -H "X-aws-ec2-metadata-token: ${token}" \
+  "http://169.254.169.254/latest/meta-data/instance-id")"
+
+deadline=$((SECONDS + DRAIN_TIMEOUT_SECONDS))
+while true; do
+  all_idle=true
+  while read -r port; do
+    if ! curl -fsS -o /dev/null --max-time 2 \
+      "http://127.0.0.1:${port}/readyz"; then
+      all_idle=false
+      break
+    fi
+  done < <(jq -r '.workers[].managementPort' "$MANIFEST")
+
+  if [ "$all_idle" = true ]; then
+    break
+  fi
+  if ((SECONDS >= deadline)); then
+    echo "timed out waiting for active workers to become idle" >&2
+    echo "the instance remains protected from scale-in" >&2
+    exit 1
+  fi
+  sleep "$POLL_SECONDS"
+done
+
+while read -r id; do
+  systemctl stop "cursor-worker-${id}.service"
+done < <(jq -r '.workers[].id' "$MANIFEST")
+
+aws autoscaling set-instance-protection \
+  --region "$AWS_REGION" \
+  --auto-scaling-group-name "$ASG_NAME" \
+  --instance-ids "$instance_id" \
+  --no-protected-from-scale-in
+
+echo "Drained ${instance_id}; ASG scale-in protection removed."
