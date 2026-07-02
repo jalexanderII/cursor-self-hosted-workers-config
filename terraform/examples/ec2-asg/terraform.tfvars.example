@@ -6,10 +6,9 @@ environment     = "prod"
 vpc_id     = "vpc-REPLACE_ME"
 subnet_ids = ["subnet-REPLACE_ME_A", "subnet-REPLACE_ME_B", "subnet-REPLACE_ME_C"]
 
-repo_slug        = "YOUR_ORG/YOUR_REPO"
+repo_url         = "https://github.com/YOUR_ORG/YOUR_REPO.git"
 repo_branch      = "main"
 worker_pool_name = "prod-ec2"
-scm_host         = "github.com"
 scm_username     = "x-access-token"
 
 cursor_api_secret_name = "cursor/self-hosted-workers/cursor-api-key"

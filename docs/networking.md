@@ -1,86 +1,51 @@
 # Networking
 
-Self-hosted workers require outbound connectivity only. Cursor does not require
-public worker IPs, inbound firewall rules, or inbound VPN tunnels.
+Workers need **outbound HTTPS only**. No public worker IPs, inbound firewall
+rules, or inbound VPN for Cursor.
 
-## Required destinations
+## Cursor destinations
 
-Runtime:
+Allow these hosts on port 443 for current self-hosted workers (confirm with
+Cursor if your network controls reject them after a product change):
 
-- `api2.cursor.sh`
-- `api2direct.cursor.sh`
+| Purpose | Host |
+| --- | --- |
+| Runtime API | `api2.cursor.sh` |
+| Runtime API (direct) | `api2direct.cursor.sh` |
+| Artifact uploads | `cloud-agent-artifacts.s3.us-east-1.amazonaws.com` |
+| Installer / updates | `cursor.com`, `downloads.cursor.com` |
 
-Artifact uploads:
-
-- `cloud-agent-artifacts.s3.us-east-1.amazonaws.com`
-
-Installation and updates:
-
-- `cursor.com`
-- `downloads.cursor.com`
-
-Workload-specific destinations:
-
-- the configured SCM host
-- package and container registries
-- AWS APIs used by the deployment
-- approved internal APIs, databases, and command/stdio MCP endpoints
-- observability and security services
+Also allow your SCM host, package and container registries, AWS APIs your
+deployment uses, approved internal services (including MCP), and your
+observability stack.
 
 Blocking the artifact host disables artifact uploads and related previews. It
-does not stop the core agent session.
+does not stop the core agent session. Prefer the exact artifact hostname over
+`*.s3.us-east-1.amazonaws.com`, which opens every bucket in the region.
 
-## Egress enforcement
+## Enforcement
 
-The portable Kubernetes NetworkPolicy permits DNS and outbound TCP 443. This is
-a protocol-level baseline, not a domain allowlist.
+The example NetworkPolicy allows DNS and TCP 443. That is a protocol baseline,
+not a domain allowlist. Security groups and standard NetworkPolicy cannot
+express FQDNs. Enforce destinations with an egress proxy, AWS Network Firewall
+(or equivalent), a CNI with FQDN policy, a mesh egress gateway, or private
+endpoints plus tight routing.
 
-Standard Kubernetes NetworkPolicy and EC2 security groups cannot express FQDN
-rules. Enforce destination-level policy with one of:
+EC2 HTTPS egress defaults to `0.0.0.0/0` for the same reason; DNS stays limited
+to the VPC CIDR. Route production HTTPS through your approved egress control.
 
-- corporate egress proxy
-- AWS Network Firewall or equivalent
-- Cilium/another CNI with supported FQDN policy
-- service-mesh egress gateway
-- private endpoints plus tightly scoped routing
+## Local management ports
 
-Do not allow `*.s3.us-east-1.amazonaws.com` when an exact artifact hostname rule
-is possible. That wildcard permits egress to every S3 bucket in the region.
+Workers expose `/healthz`, `/readyz`, and `/metrics` on port **8080**.
 
-## Ingress
-
-Worker management endpoints run on port 8080:
-
-- `/healthz`
-- `/readyz`
-- `/metrics`
-
-No application ingress is required. The baseline policy permits only port 8080
-so kubelet probes work across common CNI implementations. Restrict metrics
-scraping further with CNI-specific source selectors where supported.
-
-EC2 binds management endpoints to localhost and has no inbound security-group
-rules. Administration uses SSM Session Manager.
-
-## DNS
-
-EC2 DNS egress is limited to the selected VPC CIDR. HTTPS egress remains
-configurable and defaults to `0.0.0.0/0` because security groups cannot enforce
-the required hostnames. Production deployments should route it through an
-enterprise egress control.
+- **EKS:** no Service/Ingress is required. The baseline policy allows port 8080
+  for kubelet probes; tighten scrape sources with your CNI when you can.
+- **EC2:** management ports bind to localhost. No inbound security-group rules.
+  Admin via SSM Session Manager.
 
 ## Service mesh
 
-A service mesh is not required. Existing meshes may provide internal mTLS,
-centralized egress, and telemetry, but they add failure modes.
-
-Validate:
-
-- long-lived outbound HTTP/2 connections
-- token rotation and reconnection
-- artifact uploads
-- SCM/package-registry access
-- command/stdio MCP access to internal services
-
-The controller mounts the short-lived Cursor token only into the named worker
-container, not injected sidecars.
+Optional. If you already run a mesh, validate long-lived outbound HTTP/2,
+token refresh, artifact uploads, SCM/registry access, and MCP to internal
+services. The controller mounts the short-lived Cursor token only into the
+named worker container, not into injected sidecars.

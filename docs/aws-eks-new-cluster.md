@@ -80,8 +80,12 @@ CPU or memory, either:
 - lower pod resource requests only if your repo workload can tolerate it
 
 The node group is dedicated to Cursor workers by default through a node label
-and `NoSchedule` taint. The existing-cluster worker example includes the
-matching selector and toleration.
+`cursor.com/workload=cloud-agent-worker` and a `NoSchedule` taint of the same
+key. The workers example defaults to matching nodeSelector and tolerations, so
+pods schedule onto that node group when you continue with
+`aws-eks-existing-cluster.md`. Clear both `worker_node_selector` and
+`worker_tolerations` only when you intentionally use a shared node pool that is
+not tainted.
 
 Before choosing a Kubernetes version, verify that it remains in EKS standard
 support. Avoid paid extended-support defaults and plan minor-version upgrades

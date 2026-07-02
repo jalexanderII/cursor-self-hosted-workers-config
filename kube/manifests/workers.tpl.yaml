@@ -14,10 +14,6 @@ spec:
     metadata:
       labels:
         app: ${app_label}
-        app.kubernetes.io/name: cursor-self-hosted-worker
-        app.kubernetes.io/instance: ${worker_deployment_name}
-        app.kubernetes.io/component: worker
-        app.kubernetes.io/part-of: cursor-self-hosted-cloud-agents
 %{ for key, value in kubernetes_labels ~}
         ${key}: ${jsonencode(value)}
 %{ endfor ~}

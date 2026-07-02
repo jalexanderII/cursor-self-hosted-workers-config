@@ -37,7 +37,7 @@ Edit at least:
 AWS_PROFILE=default
 AWS_REGION=us-east-1
 DEPLOYMENT_NAME=cursor-workers
-REPO_SLUG=YOUR_ORG/YOUR_REPO
+REPO_URL=https://github.com/YOUR_ORG/YOUR_REPO.git
 REPO_BRANCH=main
 CURSOR_WORKER_POOL_NAME=prod-ec2
 EC2_INSTANCE_TYPE=m6i.xlarge
@@ -101,8 +101,8 @@ for port in $(jq -r '.workers[].managementPort' /etc/cursor-workers/workers.json
 done
 ```
 
-A healthy worker shows as connected and unclaimed when idle. In Cursor Cloud
-Agents, choose Self-Hosted and select the configured pool.
+Idle workers return HTTP 200 from `/readyz`. In Cursor, start a Cloud Agent on
+Self-Hosted and select the configured pool.
 
 ## Scale
 

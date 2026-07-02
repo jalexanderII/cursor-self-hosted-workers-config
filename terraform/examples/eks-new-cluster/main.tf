@@ -9,15 +9,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region  = var.aws_region
-  profile = var.aws_profile != "" ? var.aws_profile : null
-
-  default_tags {
-    tags = local.common_tags
-  }
-}
-
 variable "aws_region" {
   description = "AWS region."
   type        = string
@@ -144,30 +135,25 @@ variable "eks_cluster_kms_key_arn" {
   nullable    = true
 }
 
-locals {
-  common_tags = merge(
-    {
-      Application = "cursor-self-hosted-cloud-agents"
-      Deployment  = var.deployment_name
-      Environment = var.environment
-      ManagedBy   = "terraform"
-      Service     = "cursor-agent-worker"
-      Platform    = "cursor"
-    },
-    var.extra_tags
-  )
-}
-
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
 module "tags" {
   source = "../../modules/common-tags"
 
   deployment_name = var.deployment_name
   environment     = var.environment
   extra_tags      = var.extra_tags
+}
+
+provider "aws" {
+  region  = var.aws_region
+  profile = var.aws_profile != "" ? var.aws_profile : null
+
+  default_tags {
+    tags = module.tags.tags
+  }
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 module "ecr" {

@@ -20,7 +20,18 @@ TOKEN="$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
 INSTANCE_ID="$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" \
   "http://169.254.169.254/latest/meta-data/instance-id")"
 
-REPO="$(jq -r '.repo' "$MANIFEST")"
+# CloudWatch Repo dimension is the path (owner/repo), derived from repoUrl.
+REPO_URL="$(jq -r '.repoUrl // empty' "$MANIFEST")"
+case "$REPO_URL" in
+  https://*)
+    REPO="${REPO_URL#https://*/}"
+    REPO="${REPO%.git}"
+    ;;
+  *)
+    echo "workers.json must set repoUrl to an HTTPS clone URL" >&2
+    exit 1
+    ;;
+esac
 
 total=0
 ready=0

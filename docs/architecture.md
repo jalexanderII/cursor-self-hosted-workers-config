@@ -1,84 +1,66 @@
-# Architecture and responsibility boundaries
-
-## Data and control flow
+# Architecture
 
 ```text
 User or automation
        |
        v
-Cursor cloud: agent loop, orchestration, inference, routing, conversation UI
+Cursor cloud: agent loop, orchestration, inference, routing, UI
        |
-       | outbound worker connection carries tool requests and results
+       | long-lived outbound HTTPS (tool requests and results)
        v
 Customer worker: repository, shell, filesystem, local MCP, private services
 ```
 
-The worker establishes a long-lived outbound HTTPS connection. Cursor does not
-open an inbound connection to the worker.
+Workers dial out. Cursor does not require inbound access to your network.
 
-Cursor owns:
-
-- agent planning and inference
-- conversation/run orchestration
-- selection of eligible workers by repo and pool
-- product integrations and uploaded artifacts
-- Cursor-side usage telemetry
-
-The customer owns:
-
-- worker images, filesystems, repositories, and cleanup
-- Kubernetes/EC2 compute and infrastructure capacity
-- SCM and workload credentials
-- network policy and access to internal services
-- logging, monitoring, incident response, backup, and recovery
+| Cursor owns | You own |
+| --- | --- |
+| Agent planning and inference | Worker images, filesystem, and cleanup |
+| Run orchestration and routing | Compute capacity (EKS or EC2) |
+| Product UI and artifact storage | SCM and workload credentials |
+| Usage telemetry on Cursor's side | Network policy, logging, recovery |
 
 ## Kubernetes lifecycle
 
-`WorkerDeployment.spec.readyReplicas` is an idle-ready floor, not a maximum.
+`readyReplicas` is an **idle floor**, not a maximum.
 
-1. A pod starts and registers as a pool worker.
-2. `/readyz` returns HTTP 200 while connected and idle.
-3. Cursor assigns a session; `/readyz` becomes non-200.
-4. The controller creates another pod to restore the idle floor.
-5. The busy pod remains alive during scale-down and rolling updates.
-6. After the session and idle timeout, the CLI exits and the pod is replaced.
+1. Pod starts and registers.
+2. `/readyz` is HTTP 200 while connected and idle.
+3. Cursor claims the worker; `/readyz` becomes non-200.
+4. Controller starts another pod to restore the idle floor.
+5. Busy pods survive scale-down and rolling updates.
+6. After the session and idle timeout, the process exits and the pod is replaced.
 
-Use the Cursor controller for worker-pod lifecycle and Cluster Autoscaler,
-Karpenter, or EKS Auto Mode for node lifecycle. Do not attach an HPA directly to
-the controller-managed worker pods.
+Use the Cursor controller for pods. Use Cluster Autoscaler, Karpenter, or EKS
+Auto Mode for nodes. Do not attach an HPA to controller-managed worker pods.
 
 ## EC2 lifecycle
 
-Each systemd unit owns one workspace and worker process. The secure default is
-one unit per host.
+Each systemd unit is one worker and one workspace. Default is one unit per host.
 
-The local autoscaler uses documented local interfaces:
+Local autoscaling uses only that host's interfaces:
 
-- `/readyz` HTTP 200 means connected and idle
-- `/metrics` reports connection and active-session state
-- systemd reports process health
+- `/readyz` HTTP 200 → connected and idle
+- `/metrics` → connection / active-session gauges
+- systemd → process health
 
-ASG hosts are protected from scale-in. Before replacement, the drain script
-stops local autoscaling, waits for every worker to become idle, stops workers,
-then removes scale-in protection.
+ASG instances are protected from scale-in. `cursor-workers-drain` stops local
+autoscaling, waits until every worker is idle, stops workers, then removes
+protection.
 
-## State model
+## State
 
-Self-hosted worker disks are customer-owned and are not restored by Cursor.
+Worker disks are yours. Cursor does not back them up or restore them.
 
-- Kubernetes starts from a fresh clone on ephemeral storage.
-- EC2 resets the workspace before a worker registers.
-- Follow-ups can reuse the workspace only while the same worker remains claimed.
-- Git commits/pushes and external artifact systems are the durable checkpoints.
+- Kubernetes: fresh clone on ephemeral storage each pod.
+- EC2: workspace reset before the worker registers.
+- Durable work is Git (and any artifact store you require). Follow-ups reuse a
+  workspace only while the same worker remains claimed.
 
-## Deployment tiers
+## Isolation tiers
 
-Shared EKS is appropriate for one organizational trust boundary with separate
-namespaces, identities, policies, quotas, and storage.
-
-Dedicated EKS nodes add compute and cost isolation while sharing the control
-plane.
-
-Dedicated clusters or accounts are required when isolation must survive
-namespace or cluster-administrator compromise, or when regulatory and audit
-boundaries demand separate infrastructure.
+| Tier | Use when |
+| --- | --- |
+| Shared EKS, separate namespaces | One org trust boundary; separate identities, secrets, quotas |
+| Dedicated node pools | Need compute isolation; still share control plane |
+| Dedicated cluster or account | Hostile/regulatory tenants; must survive namespace or cluster-admin compromise |

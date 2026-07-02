@@ -32,7 +32,7 @@ write_b64_file() {
   rm -f "$tmp"
 }
 
-write_b64_file 0755 root /usr/local/bin/git-credential-github-secretsmanager "${git_credential_helper_b64}"
+write_b64_file 0755 root /usr/local/bin/git-credential-scm-secretsmanager "${git_credential_helper_b64}"
 write_b64_file 0755 root /usr/local/bin/cursor-worker-start "${cursor_worker_start_b64}"
 write_b64_file 0755 root /usr/local/bin/cursor-workers-reconcile "${cursor_workers_reconcile_b64}"
 write_b64_file 0755 root /usr/local/bin/cursor-workers-autoscale "${cursor_workers_autoscale_b64}"
@@ -54,7 +54,7 @@ write_b64_file 0640 root /etc/cursor-workers/repo-env-files "${repo_env_files_b6
 chgrp "$worker_group" /etc/cursor-workers/repo-env-files
 %{ endif ~}
 
-sudo -u "${worker_user}" git config --global credential.helper /usr/local/bin/git-credential-github-secretsmanager
+sudo -u "${worker_user}" git config --global credential.helper /usr/local/bin/git-credential-scm-secretsmanager
 rm -f "/home/${worker_user}/.git-credentials"
 
 if ! sudo -u "${worker_user}" bash -lc 'command -v agent >/dev/null 2>&1'; then

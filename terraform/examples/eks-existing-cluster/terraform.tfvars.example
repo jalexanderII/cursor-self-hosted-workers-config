@@ -38,7 +38,8 @@ kubernetes_labels = {
   owner       = "REPLACE_ME"
 }
 
-# Optional dedicated-node scheduling.
+# Defaults match the dedicated node group from eks-new-cluster. Clear both for
+# a shared node pool: worker_node_selector = {} and worker_tolerations = [].
 worker_node_selector = {
   "cursor.com/workload" = "cloud-agent-worker"
 }

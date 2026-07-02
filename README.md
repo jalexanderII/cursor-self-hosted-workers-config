@@ -52,7 +52,10 @@ make kube-apply-rendered
 make kube-status
 ```
 
-Skip the cluster targets when you already have an EKS cluster.
+Skip the cluster targets when you already have an EKS cluster. Worker pods
+default to the dedicated node label and toleration used by the new-cluster
+node group. On a shared node pool, set `worker_node_selector = {}` and
+`worker_tolerations = []` before apply.
 
 ## EC2 quick start
 
@@ -73,9 +76,9 @@ Hosts are protected from ASG scale-in. Drain with
 
 ## Docs
 
-- [`docs/architecture.md`](docs/architecture.md) — control plane vs worker boundary
-- [`docs/security.md`](docs/security.md) — isolation and credentials
-- [`docs/networking.md`](docs/networking.md) — required egress
-- [`docs/finops.md`](docs/finops.md) — usage vs infrastructure chargeback
-- [`docs/disaster-recovery.md`](docs/disaster-recovery.md) — ephemeral workers and rebuild
-- [`docs/operations.md`](docs/operations.md) — rotate, scale, drain, tear down
+- [`docs/architecture.md`](docs/architecture.md): control plane vs worker boundary
+- [`docs/security.md`](docs/security.md): isolation and credentials
+- [`docs/networking.md`](docs/networking.md): required egress
+- [`docs/finops.md`](docs/finops.md): usage vs infrastructure chargeback
+- [`docs/disaster-recovery.md`](docs/disaster-recovery.md): ephemeral workers and rebuild
+- [`docs/operations.md`](docs/operations.md): rotate, scale, drain, tear down

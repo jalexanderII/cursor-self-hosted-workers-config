@@ -1,72 +1,44 @@
-# FinOps and chargeback
+# Cost allocation
 
-Cursor inference/product costs and customer infrastructure costs are separate
-allocation pipelines.
+Cursor product usage and customer-owned infrastructure are separate cost streams.
 
 ## Cursor usage
 
-Use the Cursor dashboard, CSV exports, Billing Groups, and Admin API usage
-events. The filtered usage-events API supports dimensions including:
+Use the Cursor dashboard, exports, Billing Groups, and Admin API usage events.
+Self-hosted pool traffic is identifiable (for example `hostingType` includes
+`SELF_HOSTED_POOL`). Events also carry initiating user or service account,
+model/token dimensions, and charged amounts.
 
-- `hostingType`, including `SELF_HOSTED_POOL`
-- initiating user or `serviceAccountId`
-- Cloud Agent and automation identifiers
-- model, tokens, and per-event charged cents
+`serviceAccountId` on a usage event is the **initiator** of the request. It is
+not necessarily the service account that authenticates the worker pool.
 
-`serviceAccountId` identifies the principal that initiated a request. It should
-not be assumed to identify the service account used only to authenticate a
-worker pool.
+Billing Groups help organize reporting and chargeback. They do not enforce
+Kubernetes or AWS spending limits.
 
-Billing Groups support reporting, budgeting, and chargeback organization. They
-do not enforce infrastructure isolation or Kubernetes spend limits.
+## Your infrastructure
 
-## Customer infrastructure
+Cursor does not meter your EC2/EKS, storage, NAT, ECR, or logging costs. Use AWS
+CUR and your existing cost tools (Cloudability, Kubecost, OpenCost, etc.). There
+is no Cursor-specific Cloudability connector.
 
-Cursor does not meter customer-owned EC2/EKS compute, EBS/EFS, NAT, ECR,
-network, logging, or cache costs.
+## Tags and labels
 
-Use AWS CUR with your existing tooling, such as Cloudability, Kubecost, OpenCost,
-or equivalent. There is no native Cursor-specific Cloudability integration.
+Use the same dimensions across Cursor pools, Kubernetes labels, and AWS tags
+(for example `environment`, `owner`, `cost-center`, `cursor-pool`). Tag node
+groups, instances, volumes, NAT, ECR, and logging resources. Label namespaces
+and worker pods.
 
-## Canonical allocation dimensions
+Cursor worker labels are routing metadata. AWS tags and Kubernetes labels are
+what your FinOps tools should join on.
 
-Use the same vocabulary across Cursor pools, Kubernetes labels, and AWS tags:
+Map, under change control: Cursor team / Billing Group → pool →
+namespace/`WorkerDeployment` or ASG → cost center.
 
-- `Application` / `application`
-- `Deployment` / `deployment`
-- `Environment` / `environment`
-- `Service` / `service`
-- `Owner` / `owner`
-- `CostCenter` / `cost-center`
-- `Project` / `project`
-- `cursor-pool`
+Use worker metrics for capacity; use AWS/Kubernetes cost data for dollars.
 
-Apply AWS tags to node groups, EC2 instances, EBS/EFS, ECR, NAT gateways,
-logging resources, and supporting network resources. Apply Kubernetes labels to
-namespaces and worker pod templates.
+## Capacity
 
-Cursor worker labels are routing metadata. Kubernetes labels and AWS tags are
-the infrastructure allocation source of truth.
-
-## Reconciliation model
-
-Maintain a controlled mapping between:
-
-- Cursor team and Billing Group
-- initiating user/service account
-- repository or project
-- Cursor pool
-- Kubernetes namespace/WorkerDeployment or EC2 ASG
-- cost center and owner
-
-Use worker and controller metrics for capacity/utilization, but use AWS and
-Kubernetes cost data for actual infrastructure chargeback.
-
-## Capacity guardrails
-
-The default Cursor limit is 50 workers per team unless a larger deployment is
-approved. Terraform checks the configured EC2 maximum against that default.
-
-For Kubernetes, `readyReplicas` is only the idle floor. Total pods equal busy
-workers plus the idle floor, so ResourceQuota must be sized for expected peak
-concurrency and should remain below the approved Cursor worker limit.
+Default Cursor limit is **50 workers per team** unless a larger fleet is
+approved. On EC2, Terraform checks configured maximums against that default. On
+EKS, size ResourceQuota for peak busy pods **plus** the idle `readyReplicas`
+floor, and stay under the approved worker limit.

@@ -1,84 +1,59 @@
 # Disaster recovery
 
-Self-hosted workers are reproducible execution capacity, not durable session
-storage. Cursor does not snapshot or restore customer-managed worker disks.
+Workers are replaceable capacity, not durable session storage. Cursor does not
+snapshot or restore customer-managed worker disks.
 
-## Durable sources
+## What to keep durable
 
-Keep these outside worker hosts:
+- Terraform source and remote state (encrypted, locked)
+- Reviewed worker images (by digest)
+- Controller chart/image versions and values
+- Kubernetes manifests and policies you own
+- IAM, network, and secret *references* (values in your secret manager)
+- Git history and any build artifacts that must survive
+- Centralized logs and audit records
 
-- Terraform source and encrypted remote state with locking
-- reviewed worker images and image digests
-- controller versions and Helm values
-- Kubernetes manifests and policies
-- AWS IAM and network configuration
-- secret values in the enterprise secret manager
-- Git branches, commits, and pull requests
-- build artifacts and caches that need retention
-- centralized logs and audit records
-
-Do not treat pod `emptyDir`, EC2 root disks, or local worktrees as backups.
+Do not treat `emptyDir`, EC2 root volumes, or local worktrees as backups.
+Workspace RPO is the last pushed commit (or other external checkpoint).
 
 ## Failure behavior
 
-Planned controller updates and Kubernetes scale-down preserve busy workers.
-Transient worker connections may reconnect. Neither behavior guarantees
-filesystem recovery after pod, node, host, or cluster loss.
+Controller upgrades and controlled scale-down keep busy workers. Connection
+drops may reconnect. Neither restores a lost filesystem after pod, node, or
+host failure. For long-running work, agents should commit and push checkpoints.
 
-An uncommitted active session can lose local changes. Require agents to commit
-and push meaningful checkpoints for long-running work.
+## EKS rebuild
 
-## EKS recovery
-
-1. Restore access to remote Terraform state.
-2. Recreate the VPC/EKS baseline or select the recovery cluster.
-3. Install the pinned WorkerDeployment CRD and namespace-scoped controller.
-4. Restore/synchronize the bound Cursor API key and SCM Secret.
-5. Push or replicate the reviewed worker image.
+1. Restore access to Terraform state (or recreate from source).
+2. Recreate or select the recovery cluster.
+3. Install the pinned controller / CRD.
+4. Restore Cursor API key and SCM secrets.
+5. Ensure the reviewed worker image is available.
 6. Apply platform policy and `WorkerDeployment`.
-7. Verify controller readiness, worker registration, network paths, and a test
-   repository before reopening the pool.
+7. Confirm registration, egress, and a test job before reopening the pool.
 
-Use multiple availability zones and keep the controller at two replicas with
-leader election and a PDB. This repository does not implement automatic
-multi-region failover.
+Run the control plane across AZs; keep the controller at two replicas with a
+PDB. This repo does not implement multi-region failover.
 
-## EC2 recovery
+## EC2 rebuild
 
-The ASG should recreate capacity from the pinned AMI and launch template.
-Secrets are read from Secrets Manager and repositories are cloned from SCM.
+The ASG recreates instances from the pinned AMI and launch template. Secrets
+come from Secrets Manager; repos come from SCM.
 
-Before planned replacement:
+Before planned replacement, drain each host over SSM:
 
 ```bash
-aws ssm send-command ... --parameters \
-  commands='["sudo /usr/local/bin/cursor-workers-drain"]'
+aws ssm send-command \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["sudo /usr/local/bin/cursor-workers-drain"]'
 ```
 
-Only begin scale-in or instance refresh after drain succeeds. A failed drain
-leaves the host protected from scale-in.
+Only scale in or start an instance refresh after drain succeeds. Failed drain
+leaves scale-in protection enabled.
 
-## RTO and RPO
+## Validate
 
-Define customer-specific objectives for:
-
-- Terraform state recovery
-- image availability
-- secret-system availability
-- SCM availability
-- cluster/ASG recreation
-- centralized log retention
-
-Workspace RPO is the last external checkpoint, normally a pushed Git commit.
-Workspace RTO is not guaranteed because the exact local disk is disposable.
-
-## Testing
-
-At least quarterly:
-
-- rebuild each deployment path in a disposable environment
-- rotate Cursor and SCM credentials
-- terminate a worker during an active test and confirm expected failure handling
-- drain and refresh EC2 capacity
-- restore from remote Terraform state
-- verify cost tags, logs, metrics, and alarms in the recovered environment
+In a disposable environment, periodically: rebuild the path you run, rotate
+credentials, terminate a worker mid-session and confirm expected behavior, drain
+and refresh EC2 capacity, and confirm tags, logs, and metrics after recovery.

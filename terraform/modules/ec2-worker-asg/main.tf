@@ -18,9 +18,17 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
-variable "repo_slug" {
-  description = "Repository slug workers clone, for example owner/repo."
+variable "repo_url" {
+  description = "HTTPS repository clone URL without embedded credentials."
   type        = string
+
+  validation {
+    condition = (
+      can(regex("^https://[^/]+/.+", var.repo_url)) &&
+      !can(regex("^https://[^/]*@", var.repo_url))
+    )
+    error_message = "repo_url must be an HTTPS clone URL without embedded credentials."
+  }
 }
 
 variable "repo_branch" {
@@ -29,14 +37,8 @@ variable "repo_branch" {
   default     = "main"
 }
 
-variable "scm_host" {
-  description = "HTTPS SCM host used by the EC2 git credential helper."
-  type        = string
-  default     = "github.com"
-}
-
 variable "scm_username" {
-  description = "HTTPS SCM username."
+  description = "HTTPS SCM username for the credential helper."
   type        = string
   default     = "x-access-token"
 }
@@ -79,7 +81,7 @@ variable "autoscale_min_idle" {
 variable "autoscale_scale_step" {
   description = "Worker slots added per local scale-up."
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "autoscale_scale_down_step" {
@@ -101,10 +103,8 @@ variable "instance_type" {
 }
 
 variable "ami_id" {
-  description = "Optional AMI override. Defaults to the latest Ubuntu 24.04 LTS amd64 AMI."
+  description = "Reviewed AMI ID for worker instances. Do not use account-wide latest-AMI lookups in production."
   type        = string
-  default     = null
-  nullable    = true
 }
 
 variable "cursor_install_url" {
@@ -234,22 +234,6 @@ variable "tags" {
   default     = {}
 }
 
-data "aws_ami" "ubuntu" {
-  count       = var.ami_id == null ? 1 : 0
-  most_recent = true
-  owners      = ["099720109477"]
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "assume_role" {
@@ -266,6 +250,20 @@ data "aws_iam_policy_document" "assume_role" {
 locals {
   base_dir = "/opt/cursor-workers/base"
 
+  # Derive host and path from repo_url so operators only set one field.
+  repo_url_normalized = trimsuffix(var.repo_url, "/")
+  repo_url_base = endswith(local.repo_url_normalized, ".git") ? trimsuffix(local.repo_url_normalized, ".git") : local.repo_url_normalized
+  repo_without_scheme = replace(local.repo_url_base, "https://", "")
+  repo_host           = split("/", local.repo_without_scheme)[0]
+  repo_path = join(
+    "/",
+    slice(
+      split("/", local.repo_without_scheme),
+      1,
+      length(split("/", local.repo_without_scheme))
+    )
+  )
+
   workers = [
     for index in range(var.worker_slots_per_instance) : {
       id              = tostring(index + 1)
@@ -277,7 +275,7 @@ locals {
   ]
 
   workers_json = templatefile("${path.module}/../../templates/workers-json.tftpl", {
-    repo_slug   = var.repo_slug
+    repo_url    = var.repo_url
     repo_branch = var.repo_branch
     workers     = local.workers
   })
@@ -286,7 +284,7 @@ locals {
     "AWS_REGION=${var.aws_region}",
     "CURSOR_API_SECRET_ID=${var.cursor_api_secret_name}",
     "SCM_TOKEN_SECRET_ID=${var.scm_token_secret_name}",
-    "SCM_HOST=${var.scm_host}",
+    "SCM_HOST=${local.repo_host}",
     "SCM_USERNAME=${var.scm_username}",
     "CURSOR_WORKER_POOL_NAME=${var.worker_pool_name}",
     "CURSOR_WORKER_IDLE_RELEASE_TIMEOUT=${var.worker_idle_release_timeout}",
@@ -316,7 +314,7 @@ locals {
   user_data = templatefile("${path.module}/../../templates/ec2-user-data.sh.tftpl", {
     worker_user                        = var.worker_user
     cursor_install_url                 = var.cursor_install_url
-    git_credential_helper_b64          = base64encode(file("${path.module}/../../../ec2/bin/git-credential-github-secretsmanager"))
+    git_credential_helper_b64          = base64encode(file("${path.module}/../../../ec2/bin/git-credential-scm-secretsmanager"))
     cursor_worker_start_b64            = base64encode(file("${path.module}/../../../ec2/bin/cursor-worker-start"))
     cursor_workers_reconcile_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-reconcile"))
     cursor_workers_autoscale_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-autoscale"))
@@ -451,7 +449,7 @@ resource "aws_vpc_security_group_egress_rule" "dns_tcp" {
 
 resource "aws_launch_template" "worker" {
   name_prefix   = "${var.name_prefix}-worker-"
-  image_id      = var.ami_id == null ? data.aws_ami.ubuntu[0].id : var.ami_id
+  image_id      = var.ami_id
   instance_type = var.instance_type
   # cloud-init automatically detects and decompresses gzip user data.
   user_data              = base64gzip(local.user_data)
@@ -550,4 +548,9 @@ output "instance_profile_name" {
 output "compressed_user_data_base64_length" {
   description = "Length of the base64-encoded gzip user-data payload; must remain at or below 21,848 characters."
   value       = length(base64gzip(local.user_data))
+}
+
+output "repo_metric_dimension" {
+  description = "Repo path used as the CloudWatch Repo dimension (host path without .git)."
+  value       = local.repo_path
 }

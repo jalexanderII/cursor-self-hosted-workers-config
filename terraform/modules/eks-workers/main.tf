@@ -47,13 +47,13 @@ variable "controller_image_tag" {
 }
 
 variable "controller_replicas" {
-  description = "Number of controller replicas. Leader election keeps one active."
+  description = "Number of controller replicas. Use at least 2 in production; leader election keeps one active."
   type        = number
   default     = 2
 
   validation {
-    condition     = var.controller_replicas >= 2
-    error_message = "controller_replicas must be at least 2 for the production reference."
+    condition     = var.controller_replicas >= 1
+    error_message = "controller_replicas must be at least 1."
   }
 }
 
@@ -134,8 +134,6 @@ resource "kubernetes_namespace_v1" "workers" {
     name = var.namespace
     labels = merge(
       {
-        "app.kubernetes.io/name"                     = "cursor-self-hosted-workers"
-        "app.kubernetes.io/part-of"                  = "cursor-self-hosted-cloud-agents"
         "pod-security.kubernetes.io/enforce"         = "restricted"
         "pod-security.kubernetes.io/enforce-version" = var.pod_security_version
         "pod-security.kubernetes.io/audit"           = "restricted"
@@ -153,10 +151,6 @@ resource "kubernetes_service_account_v1" "worker" {
     name        = var.worker_service_account_name
     namespace   = kubernetes_namespace_v1.workers.metadata[0].name
     annotations = var.worker_service_account_annotations
-    labels = {
-      "app.kubernetes.io/name"    = "cursor-self-hosted-worker"
-      "app.kubernetes.io/part-of" = "cursor-self-hosted-cloud-agents"
-    }
   }
 
   automount_service_account_token = false
@@ -236,17 +230,12 @@ resource "kubernetes_network_policy_v1" "worker" {
       }
     }
 
+    # Allow DNS to kube-system without requiring a specific CoreDNS pod label.
     egress {
       to {
         namespace_selector {
           match_labels = {
             "kubernetes.io/metadata.name" = "kube-system"
-          }
-        }
-
-        pod_selector {
-          match_labels = {
-            "k8s-app" = "kube-dns"
           }
         }
       }

@@ -15,7 +15,6 @@ umask 077
 # - The worker name and worker directory should use the pod name. If every pod
 #   uses /workspace/repo, the Cursor UI displays every worker as "repo".
 
-: "${REPO_URL:=${REPO_SLUG:+https://${GITHUB_HOST:-github.com}/${REPO_SLUG}.git}}"
 : "${REPO_URL:?missing REPO_URL, for example https://github.com/owner/repo.git}"
 : "${BRANCH:=main}"
 : "${CURSOR_WORKER_POOL_NAME:=default}"
@@ -51,14 +50,6 @@ esac
 
 rm -rf "$WORKER_DIR"
 
-# Backwards compatibility for the original environment-variable example. New
-# deployments should mount a read-only token file at SCM_TOKEN_FILE.
-legacy_token_file=""
-if [ ! -r "$SCM_TOKEN_FILE" ] && [ -n "${GITHUB_PAT:-}" ]; then
-  legacy_token_file="$(mktemp)"
-  printf '%s' "$GITHUB_PAT" >"$legacy_token_file"
-  SCM_TOKEN_FILE="$legacy_token_file"
-fi
 if [ ! -r "$SCM_TOKEN_FILE" ]; then
   echo "SCM token file is not readable: ${SCM_TOKEN_FILE}" >&2
   exit 1
@@ -66,13 +57,7 @@ fi
 
 # Use GIT_ASKPASS so the token is not written into the git remote URL.
 askpass="$(mktemp)"
-cleanup_credentials() {
-  rm -f "$askpass"
-  if [ -n "$legacy_token_file" ]; then
-    rm -f "$legacy_token_file"
-  fi
-}
-trap cleanup_credentials EXIT
+trap 'rm -f "$askpass"' EXIT
 cat > "$askpass" <<'ASKPASS'
 #!/usr/bin/env sh
 case "$1" in
@@ -87,11 +72,7 @@ export SCM_USERNAME SCM_TOKEN_FILE
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
   git clone --branch "$BRANCH" "$REPO_URL" "$WORKER_DIR"
 rm -f "$askpass"
-if [ -n "$legacy_token_file" ]; then
-  rm -f "$legacy_token_file"
-fi
 trap - EXIT
-unset GITHUB_PAT
 
 # Optional mapping format:
 #   mounted-secret-file-name:repo/relative/target/path

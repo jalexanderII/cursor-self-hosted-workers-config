@@ -5,10 +5,9 @@ cluster. Terraform manages:
 
 - ECR for the worker image
 - AWS Secrets Manager secret containers
-- the `cursord` namespace
-- Cursor's official `worker-set-controller` Helm release
-- a labels ConfigMap
-- a rendered `WorkerDeployment` manifest written to
+- the namespace, ServiceAccount, ResourceQuota, and baseline NetworkPolicy
+- Cursor's `worker-set-controller` Helm release
+- a rendered `WorkerDeployment` manifest at
   `terraform/examples/eks-existing-cluster/rendered/workers.yaml`
 
 Secret values and the `WorkerDeployment` apply are intentionally outside
@@ -51,6 +50,16 @@ WORKER_READY_REPLICAS=3
 If your kubeconfig current context is not the target cluster, set
 `TF_VAR_kube_context` in `.env` or create
 `terraform/examples/eks-existing-cluster/terraform.tfvars` from the example.
+
+Worker pods default to the dedicated node label and toleration used by
+`eks-new-cluster` (`cursor.com/workload=cloud-agent-worker`). That is required
+for the greenfield path: those nodes are tainted and unlabeled pods stay
+Pending. On a shared node pool with no such taint, set both:
+
+```hcl
+worker_node_selector = {}
+worker_tolerations   = []
+```
 
 ## Deploy infrastructure
 
@@ -141,7 +150,8 @@ make kube-apply-rendered
 ```
 
 Node capacity is separate. Pending pods usually mean insufficient CPU, memory,
-IP addresses, image pull permissions, or node taints.
+IP addresses, image pull permissions, missing nodeSelector/toleration match, or
+node taints you did not expect.
 
 The baseline applies restricted Pod Security, a dedicated ServiceAccount,
 bounded ephemeral storage, ResourceQuota, and a NetworkPolicy that permits DNS

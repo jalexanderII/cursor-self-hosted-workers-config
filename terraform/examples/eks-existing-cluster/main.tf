@@ -21,27 +21,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region  = var.aws_region
-  profile = var.aws_profile != "" ? var.aws_profile : null
-
-  default_tags {
-    tags = local.common_tags
-  }
-}
-
-provider "kubernetes" {
-  config_path    = pathexpand(var.kubeconfig_path)
-  config_context = var.kube_context
-}
-
-provider "helm" {
-  kubernetes {
-    config_path    = pathexpand(var.kubeconfig_path)
-    config_context = var.kube_context
-  }
-}
-
 variable "aws_region" {
   description = "AWS region."
   type        = string
@@ -125,13 +104,16 @@ variable "secrets_kms_key_id" {
 }
 
 variable "worker_image_tag" {
-  description = "Immutable worker image tag. Do not use latest for production."
+  description = "Immutable worker image tag. Must match the tag pushed by make ecr-build-push. Do not use latest."
   type        = string
-  default     = "release-CHANGE_ME"
 
   validation {
-    condition     = lower(var.worker_image_tag) != "latest" && trimspace(var.worker_image_tag) != ""
-    error_message = "worker_image_tag must be a non-empty immutable tag and cannot be latest."
+    condition = (
+      trimspace(var.worker_image_tag) != "" &&
+      lower(var.worker_image_tag) != "latest" &&
+      !can(regex("(?i)change[_-]?me", var.worker_image_tag))
+    )
+    error_message = "worker_image_tag must be a real immutable tag (not empty, latest, or a CHANGE_ME placeholder)."
   }
 }
 
@@ -286,15 +268,22 @@ variable "worker_service_account_annotations" {
 }
 
 variable "worker_node_selector" {
-  description = "Optional node selector for worker pods."
+  description = "Node selector for worker pods. Defaults match the dedicated node group from eks-new-cluster. Set to {} for a shared node pool."
   type        = map(string)
-  default     = {}
+  default = {
+    "cursor.com/workload" = "cloud-agent-worker"
+  }
 }
 
 variable "worker_tolerations" {
-  description = "Optional tolerations for dedicated worker node groups."
+  description = "Tolerations for worker pods. Defaults match the NoSchedule taint from eks-new-cluster. Set to [] for a shared node pool."
   type        = list(any)
-  default     = []
+  default = [{
+    key      = "cursor.com/workload"
+    operator = "Equal"
+    value    = "cloud-agent-worker"
+    effect   = "NoSchedule"
+  }]
 }
 
 variable "request_cpu" {
@@ -340,23 +329,24 @@ variable "workspace_size_limit" {
 }
 
 locals {
-  common_tags = merge(
-    {
-      Application = "cursor-self-hosted-cloud-agents"
-      Deployment  = var.deployment_name
-      Environment = var.environment
-      ManagedBy   = "terraform"
-      Service     = "cursor-agent-worker"
-      Platform    = "cursor"
-    },
-    var.extra_tags
-  )
-
   worker_repository_url = var.manage_ecr_repository ? module.ecr[0].repository_url : var.existing_ecr_repository_url
   worker_image          = var.worker_image_override != "" ? var.worker_image_override : "${local.worker_repository_url}:${var.worker_image_tag}"
   worker_labels_csv = join(",", [
     for key, value in var.worker_labels : "${key}=${value}"
   ])
+
+  # indent() does not pad the first line; the template supplies that padding.
+  # chomp() avoids a trailing blank line from yamlencode.
+  node_selector_yaml = (
+    length(var.worker_node_selector) == 0
+    ? ""
+    : indent(8, chomp(yamlencode(var.worker_node_selector)))
+  )
+  tolerations_yaml = (
+    length(var.worker_tolerations) == 0
+    ? ""
+    : indent(8, chomp(yamlencode(var.worker_tolerations)))
+  )
 
   worker_manifest = templatefile("${path.module}/../../../kube/manifests/workers.tpl.yaml", {
     worker_deployment_name           = var.worker_deployment_name
@@ -387,8 +377,8 @@ locals {
     termination_grace_period_seconds = 120
     kubernetes_labels                = var.kubernetes_labels
     kubernetes_annotations           = var.kubernetes_annotations
-    node_selector_yaml               = length(var.worker_node_selector) == 0 ? "" : indent(8, yamlencode(var.worker_node_selector))
-    tolerations_yaml                 = length(var.worker_tolerations) == 0 ? "" : indent(8, yamlencode(var.worker_tolerations))
+    node_selector_yaml               = local.node_selector_yaml
+    tolerations_yaml                 = local.tolerations_yaml
   })
 }
 
@@ -399,12 +389,43 @@ check "worker_registry_is_configured" {
   }
 }
 
+check "dedicated_scheduling_is_consistent" {
+  assert {
+    condition = (
+      (length(var.worker_node_selector) == 0 && length(var.worker_tolerations) == 0) ||
+      (length(var.worker_node_selector) > 0 && length(var.worker_tolerations) > 0)
+    )
+    error_message = "Set both worker_node_selector and worker_tolerations (dedicated nodes) or clear both (shared node pool)."
+  }
+}
+
 module "tags" {
   source = "../../modules/common-tags"
 
   deployment_name = var.deployment_name
   environment     = var.environment
   extra_tags      = var.extra_tags
+}
+
+provider "aws" {
+  region  = var.aws_region
+  profile = var.aws_profile != "" ? var.aws_profile : null
+
+  default_tags {
+    tags = module.tags.tags
+  }
+}
+
+provider "kubernetes" {
+  config_path    = pathexpand(var.kubeconfig_path)
+  config_context = var.kube_context
+}
+
+provider "helm" {
+  kubernetes {
+    config_path    = pathexpand(var.kubeconfig_path)
+    config_context = var.kube_context
+  }
 }
 
 module "ecr" {

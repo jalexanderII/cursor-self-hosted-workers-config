@@ -9,15 +9,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region  = var.aws_region
-  profile = var.aws_profile != "" ? var.aws_profile : null
-
-  default_tags {
-    tags = local.common_tags
-  }
-}
-
 variable "aws_region" {
   description = "AWS region."
   type        = string
@@ -69,9 +60,17 @@ variable "ec2_https_egress_cidr_blocks" {
   default     = ["0.0.0.0/0"]
 }
 
-variable "repo_slug" {
-  description = "Repository slug workers clone, for example owner/repo."
+variable "repo_url" {
+  description = "HTTPS repository clone URL without embedded credentials."
   type        = string
+
+  validation {
+    condition = (
+      can(regex("^https://[^/]+/.+", var.repo_url)) &&
+      !can(regex("^https://[^/]*@", var.repo_url))
+    )
+    error_message = "repo_url must be an HTTPS clone URL without embedded credentials."
+  }
 }
 
 variable "repo_branch" {
@@ -80,14 +79,8 @@ variable "repo_branch" {
   default     = "main"
 }
 
-variable "scm_host" {
-  description = "HTTPS SCM host."
-  type        = string
-  default     = "github.com"
-}
-
 variable "scm_username" {
-  description = "HTTPS SCM username."
+  description = "HTTPS SCM username for the credential helper."
   type        = string
   default     = "x-access-token"
 }
@@ -210,10 +203,8 @@ variable "ec2_associate_public_ip_address" {
 }
 
 variable "ec2_ami_id" {
-  description = "Optional AMI override."
+  description = "Reviewed AMI ID for worker instances."
   type        = string
-  default     = null
-  nullable    = true
 }
 
 variable "labels_json" {
@@ -227,29 +218,25 @@ variable "labels_json" {
   JSON
 }
 
-locals {
-  common_tags = merge(
-    {
-      Application = "cursor-self-hosted-cloud-agents"
-      Deployment  = var.deployment_name
-      Environment = var.environment
-      ManagedBy   = "terraform"
-      Service     = "cursor-agent-worker"
-      Platform    = "cursor"
-    },
-    var.extra_tags
-  )
+module "tags" {
+  source = "../../modules/common-tags"
+
+  deployment_name = var.deployment_name
+  environment     = var.environment
+  extra_tags      = var.extra_tags
+}
+
+provider "aws" {
+  region  = var.aws_region
+  profile = var.aws_profile != "" ? var.aws_profile : null
+
+  default_tags {
+    tags = module.tags.tags
+  }
 }
 
 data "aws_vpc" "selected" {
   id = var.vpc_id
-}
-
-check "production_ami_is_pinned" {
-  assert {
-    condition     = var.environment != "prod" || var.ec2_ami_id != null
-    error_message = "Production deployments must set ec2_ami_id to a reviewed, pinned AMI."
-  }
 }
 
 check "cursor_worker_team_limit" {
@@ -267,14 +254,6 @@ check "external_secret_arns_are_configured" {
     )
     error_message = "Existing Cursor API and SCM token secret ARNs are required when secret containers are externally managed."
   }
-}
-
-module "tags" {
-  source = "../../modules/common-tags"
-
-  deployment_name = var.deployment_name
-  environment     = var.environment
-  extra_tags      = var.extra_tags
 }
 
 module "secrets" {
@@ -301,9 +280,8 @@ module "ec2_workers" {
   aws_region                  = var.aws_region
   vpc_id                      = var.vpc_id
   subnet_ids                  = var.subnet_ids
-  repo_slug                   = var.repo_slug
+  repo_url                    = var.repo_url
   repo_branch                 = var.repo_branch
-  scm_host                    = var.scm_host
   scm_username                = var.scm_username
   worker_pool_name            = var.worker_pool_name
   worker_idle_release_timeout = var.worker_idle_release_timeout
@@ -334,7 +312,7 @@ module "observability" {
 
   dashboard_name   = "${var.deployment_name}-ec2-workers"
   metric_namespace = "Cursor/SelfHostedWorkers"
-  repo_slug        = var.repo_slug
+  repo_metric_dimension = module.ec2_workers.repo_metric_dimension
 }
 
 output "autoscaling_group_name" {

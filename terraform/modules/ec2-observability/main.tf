@@ -9,8 +9,8 @@ variable "metric_namespace" {
   default     = "Cursor/SelfHostedWorkers"
 }
 
-variable "repo_slug" {
-  description = "Repo dimension emitted by the EC2 metrics publisher."
+variable "repo_metric_dimension" {
+  description = "Repo dimension emitted by the EC2 metrics publisher (path without host or .git)."
   type        = string
 }
 
@@ -41,10 +41,10 @@ resource "aws_cloudwatch_dashboard" "workers" {
           view    = "timeSeries"
           stacked = false
           metrics = [
-            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"TotalWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "TotalWorkers", id = "total" }],
-            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ReadyWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "ReadyWorkers", id = "ready" }],
-            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ActiveWorkers\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "ActiveWorkers", id = "active" }],
-            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"FailedWorkerServices\" Repo=\"${var.repo_slug}\"', 'Sum', 60)", label = "FailedWorkerServices", id = "failed" }]
+            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"TotalWorkers\" Repo=\"${var.repo_metric_dimension}\"', 'Sum', 60)", label = "TotalWorkers", id = "total" }],
+            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ReadyWorkers\" Repo=\"${var.repo_metric_dimension}\"', 'Sum', 60)", label = "ReadyWorkers", id = "ready" }],
+            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"ActiveWorkers\" Repo=\"${var.repo_metric_dimension}\"', 'Sum', 60)", label = "ActiveWorkers", id = "active" }],
+            [{ expression = "SEARCH('{${var.metric_namespace},InstanceId,Repo} MetricName=\"FailedWorkerServices\" Repo=\"${var.repo_metric_dimension}\"', 'Sum', 60)", label = "FailedWorkerServices", id = "failed" }]
           ]
           stat   = "Sum"
           period = 60
@@ -79,7 +79,7 @@ resource "aws_cloudwatch_metric_alarm" "failed_worker_services" {
 
   dimensions = {
     InstanceId = each.value
-    Repo       = var.repo_slug
+    Repo       = var.repo_metric_dimension
   }
 }
 
