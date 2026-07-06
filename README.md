@@ -12,7 +12,8 @@ tenant-isolation boundaries.
 
 ## Deployment paths
 
-- **Existing EKS cluster:** [`docs/aws-eks-existing-cluster.md`](docs/aws-eks-existing-cluster.md)
+- **Existing EKS cluster (single pool):** [`docs/aws-eks-existing-cluster.md`](docs/aws-eks-existing-cluster.md)
+- **Existing EKS cluster (multi-team, one controller + many pools):** [`terraform/examples/eks-existing-cluster-multi-team`](terraform/examples/eks-existing-cluster-multi-team)
 - **New EKS cluster:** [`docs/aws-eks-new-cluster.md`](docs/aws-eks-new-cluster.md)
 - **EC2 Auto Scaling Group:** [`docs/aws-ec2-asg.md`](docs/aws-ec2-asg.md)
 

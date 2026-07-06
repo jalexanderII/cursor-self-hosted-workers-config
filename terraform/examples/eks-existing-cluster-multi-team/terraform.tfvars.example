@@ -1,0 +1,39 @@
+kubeconfig_path      = "~/.kube/config"
+kube_context         = "arn:aws:eks:us-east-1:ACCOUNT_ID:cluster/shared-eks"
+pod_security_version = "v1.35"
+
+# Built and pushed by your pipeline to a platform-managed registry.
+worker_image = "ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/cursor-worker:release-2026-07-01"
+
+# One entry per team / chargeback domain. Each becomes its own namespace, pool,
+# and WorkerDeployment, all reconciled by the single shared controller.
+teams = {
+  payments = {
+    namespace                  = "cursor-payments"
+    worker_pool_name           = "payments-eks"
+    repo_url                   = "https://github.com/YOUR_ORG/payments.git"
+    repo_branch                = "main"
+    worker_ready_replicas      = 5
+    cursor_api_key_secret_name = "cursor-workers-api-key"
+    scm_token_secret_name_k8s  = "cursor-workers-scm"
+    cost_center                = "CC-1001"
+    owner                      = "payments-platform"
+  }
+
+  claims = {
+    namespace                  = "cursor-claims"
+    worker_pool_name           = "claims-eks"
+    repo_url                   = "https://github.com/YOUR_ORG/claims.git"
+    repo_branch                = "main"
+    worker_ready_replicas      = 3
+    cursor_api_key_secret_name = "cursor-workers-api-key"
+    scm_token_secret_name_k8s  = "cursor-workers-scm"
+    cost_center                = "CC-2002"
+    owner                      = "claims-platform"
+  }
+}
+
+# Shared node pool by default. To pin workers to dedicated nodes, set a
+# nodeSelector and matching tolerations here (see docs/security.md).
+worker_node_selector = {}
+worker_tolerations   = []

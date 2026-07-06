@@ -16,6 +16,12 @@ variable "pod_security_version" {
   default     = "latest"
 }
 
+variable "install_controller" {
+  description = "Install a worker-set controller with this module call. Set false when a single cluster-wide controller (installed elsewhere) already reconciles this namespace, e.g. the multi-team example."
+  type        = bool
+  default     = true
+}
+
 variable "controller_release_name" {
   description = "Helm release name for the Cursor worker-set controller."
   type        = string
@@ -157,6 +163,8 @@ resource "kubernetes_service_account_v1" "worker" {
 }
 
 resource "helm_release" "controller" {
+  count = var.install_controller ? 1 : 0
+
   name       = var.controller_release_name
   repository = var.controller_repository
   chart      = var.controller_chart
@@ -291,8 +299,8 @@ output "namespace" {
 }
 
 output "controller_release_name" {
-  description = "Helm release name."
-  value       = helm_release.controller.name
+  description = "Helm release name, or null when install_controller is false."
+  value       = var.install_controller ? helm_release.controller[0].name : null
 }
 
 output "worker_service_account_name" {
