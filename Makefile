@@ -27,7 +27,7 @@ SCM_TOKEN_SECRET_NAME ?= cursor-workers-scm
 .PHONY: help \
 	ecr-login ecr-build-push \
 	put-secret-cursor-api-key put-secret-scm-token \
-	ec2-init ec2-plan ec2-apply ec2-validate \
+	ec2-init ec2-plan ec2-apply ec2-destroy ec2-validate ec2-recycle ec2-status \
 	eks-cluster-init eks-cluster-plan eks-cluster-apply eks-cluster-validate \
 	eks-workers-init eks-workers-plan eks-workers-apply eks-workers-validate \
 	kube-create-api-key-secret kube-create-scm-secret kube-apply-rendered kube-status \
@@ -38,7 +38,9 @@ help:
 	@echo "  ecr-build-push              Build and push kube/worker-image to ECR"
 	@echo "  put-secret-cursor-api-key   Store CURSOR_API_KEY in AWS Secrets Manager"
 	@echo "  put-secret-scm-token        Store SCM_TOKEN in AWS Secrets Manager"
-	@echo "  ec2-init|plan|apply         Manage the EC2 ASG Terraform example"
+	@echo "  ec2-init|plan|apply|destroy Manage the EC2 ASG Terraform example"
+	@echo "  ec2-recycle                 Replace ASG instances after secrets/user-data changes"
+	@echo "  ec2-status                  Show ASG + /readyz via SSM"
 	@echo "  eks-cluster-init|plan|apply Manage the optional new EKS cluster example"
 	@echo "  eks-workers-init|plan|apply Manage workers on an existing EKS cluster"
 	@echo "  kube-create-*-secret        Copy local secrets into Kubernetes Secrets"
@@ -75,6 +77,15 @@ ec2-plan:
 
 ec2-apply:
 	terraform -chdir="$(EC2_TF_DIR)" apply
+
+ec2-destroy:
+	terraform -chdir="$(EC2_TF_DIR)" destroy
+
+ec2-recycle:
+	scripts/ec2-recycle-instances.sh
+
+ec2-status:
+	scripts/ec2-worker-status.sh
 
 ec2-validate:
 	terraform -chdir="$(EC2_TF_DIR)" validate

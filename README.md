@@ -67,11 +67,15 @@ cp terraform/examples/ec2-asg/terraform.tfvars.example \
 make ec2-init
 make ec2-plan
 make ec2-apply
-CURSOR_API_KEY=... make put-secret-cursor-api-key
+CURSOR_API_KEY=... make put-secret-cursor-api-key   # service account / team key
 SCM_TOKEN=... make put-secret-scm-token
+make ec2-recycle
+make ec2-status
 ```
 
-Hosts are protected from ASG scale-in. Drain with
+`CURSOR_API_KEY` must be a Cursor service-account or team key (not a personal
+user key). Hosts are protected from ASG scale-in; use `make ec2-recycle` after
+secrets or launch-template changes, and drain with
 `/usr/local/bin/cursor-workers-drain` through SSM before reducing capacity.
 
 ## Docs

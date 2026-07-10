@@ -21,6 +21,8 @@ scm_token_secret_name  = "cursor/self-hosted-workers/scm-token"
 
 ec2_instance_type             = "m6i.xlarge"
 ec2_ami_id                    = "ami-REPLACE_WITH_REVIEWED_UBUNTU_2404"
+# Required when subnets have no NAT (for example the account default VPC).
+# ec2_associate_public_ip_address = true
 ec2_asg_min_size              = 1
 ec2_asg_desired_capacity      = 2
 ec2_asg_max_size              = 3
