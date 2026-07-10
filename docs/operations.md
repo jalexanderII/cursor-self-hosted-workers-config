@@ -19,11 +19,21 @@ CURSOR_API_KEY=... make kube-create-api-key-secret
 SCM_TOKEN=... make kube-create-scm-secret
 ```
 
-EC2 workers read secrets at process start. Restart only **idle** units.
-Kubernetes: the controller refreshes short-lived worker tokens; the long-lived
-API key is not mounted into worker pods.
+`CURSOR_API_KEY` must be a Cursor service-account or team key for pool workers.
+
+EC2 workers read secrets at process start. Restart only **idle** units, or
+replace hosts after the first secret write with `make ec2-recycle` (scale-in
+protection blocks a plain terminate). Kubernetes: the controller refreshes
+short-lived worker tokens; the long-lived API key is not mounted into worker
+pods.
 
 ## Health
+
+**EC2** (from your laptop):
+
+```bash
+make ec2-status
+```
 
 **EC2** (on the instance):
 

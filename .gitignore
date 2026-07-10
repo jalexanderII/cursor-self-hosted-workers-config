@@ -22,9 +22,11 @@ tmp/
 
 # Terraform local state and plans
 **/.terraform/
+**/.generated/
 *.tfstate
 *.tfstate.*
 *.tfplan
+tfplan
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
@@ -34,6 +36,11 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Local AWS CLI installer downloads
+AWSCLIV2.pkg
+awscliv2.zip
+aws/
 
 # Rendered deployment artifacts
 terraform/examples/**/rendered/

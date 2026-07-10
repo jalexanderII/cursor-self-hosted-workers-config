@@ -34,6 +34,9 @@ endpoints plus tight routing.
 EC2 HTTPS egress defaults to `0.0.0.0/0` for the same reason; DNS stays limited
 to the VPC CIDR. Route production HTTPS through your approved egress control.
 
+EC2 bootstrap also allows outbound TCP 80 for apt package mirrors. Tighten or
+replace that with a mirror proxy in production if your baseline forbids HTTP.
+
 ## Local management ports
 
 Workers expose `/healthz`, `/readyz`, and `/metrics` on port **8080**.

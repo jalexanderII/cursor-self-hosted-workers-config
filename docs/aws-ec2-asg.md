@@ -15,15 +15,20 @@ scheduling, Kubernetes-native rollouts, or existing cluster observability.
 ## Prerequisites
 
 - Cursor Enterprise with Self-Hosted Cloud Agents enabled.
-- A Cursor service account API key for pool workers.
+- A Cursor **service account** (or team) API key for pool workers. Personal
+  user keys fail at start with `You must use a team API key or service account
+  to start a pool worker (--pool)`.
 - An HTTPS SCM token with least-privilege access to the target repo.
 - AWS credentials with EC2, IAM, Auto Scaling, CloudWatch, SSM, and Secrets
   Manager permissions.
-- Private subnets with NAT egress, or public subnets if that is your accepted
-  network model.
+- Private subnets with NAT egress, or public subnets with
+  `ec2_associate_public_ip_address = true` if that is your accepted network
+  model. Default VPCs have no NAT; public IPs are required there.
 
 Workers need the exact Cursor and workload destinations listed in
-[`networking.md`](networking.md).
+[`networking.md`](networking.md). Bootstrap also needs outbound TCP 80 for apt
+package mirrors (the security group allows it). Runtime worker traffic stays on
+HTTPS.
 
 ## Configure
 
@@ -67,24 +72,29 @@ make ec2-apply
 ```
 
 Terraform creates the secret containers but not the secret values. Populate them
-after the first apply:
+after the first apply, then recycle instances so they boot with secrets present:
 
 ```bash
 CURSOR_API_KEY=... make put-secret-cursor-api-key
 SCM_TOKEN=... make put-secret-scm-token
+make ec2-recycle
 ```
+
+Hosts are scale-in protected, so a plain `ec2 terminate-instances` can leave the
+ASG stuck on a terminated instance. `make ec2-recycle` clears protection,
+detaches, terminates, and lets the ASG launch replacements.
 
 To use enterprise-managed secret containers, set
 `manage_aws_secret_containers = false` and provide the existing Cursor, SCM, and
 repo-environment secret ARNs. The EC2 role remains scoped to only those ARNs.
 
-New instances launched after the secret values exist will bootstrap cleanly. If
-instances launched before secrets were populated, terminate them from the ASG or
-start an instance refresh.
-
 ## Validate
 
-Use SSM to inspect an instance:
+```bash
+make ec2-status
+```
+
+Or open an SSM shell:
 
 ```bash
 aws ssm start-session --region "$AWS_REGION" --target INSTANCE_ID
@@ -178,8 +188,15 @@ Drain all hosts first. Destroying this example removes the ASG, IAM, security
 group, dashboard, and secret containers:
 
 ```bash
-terraform -chdir=terraform/examples/ec2-asg destroy
+make ec2-destroy
 ```
 
 Secrets use a recovery window by default. They are scheduled for deletion rather
 than immediately destroyed.
+
+## Bootstrap notes
+
+- User data installs **AWS CLI v2** from Amazon's zip installer. Ubuntu 24.04
+  removed the `awscli` apt package.
+- Worker scripts and systemd units are packed into one `tar.gz` inside user data
+  so the Launch Template stays under the 16 KiB limit.

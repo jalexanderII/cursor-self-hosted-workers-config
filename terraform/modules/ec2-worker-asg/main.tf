@@ -234,6 +234,19 @@ variable "tags" {
   default     = {}
 }
 
+terraform {
+  required_providers {
+    archive = {
+      source  = "hashicorp/archive"
+      version = ">= 2.4.0"
+    }
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "assume_role" {
@@ -252,7 +265,7 @@ locals {
 
   # Derive host and path from repo_url so operators only set one field.
   repo_url_normalized = trimsuffix(var.repo_url, "/")
-  repo_url_base = endswith(local.repo_url_normalized, ".git") ? trimsuffix(local.repo_url_normalized, ".git") : local.repo_url_normalized
+  repo_url_base       = endswith(local.repo_url_normalized, ".git") ? trimsuffix(local.repo_url_normalized, ".git") : local.repo_url_normalized
   repo_without_scheme = replace(local.repo_url_base, "https://", "")
   repo_host           = split("/", local.repo_without_scheme)[0]
   repo_path = join(
@@ -311,23 +324,44 @@ locals {
     ""
   ]))
 
+  # One compressed archive of bin/ + systemd/ keeps Launch Template user data
+  # under the 16 KiB limit. Per-file base64 blobs compress poorly.
+  bootstrap_asset_files = {
+    "bin/git-credential-scm-secretsmanager"    = file("${path.module}/../../../ec2/bin/git-credential-scm-secretsmanager")
+    "bin/cursor-worker-start"                  = file("${path.module}/../../../ec2/bin/cursor-worker-start")
+    "bin/cursor-workers-reconcile"             = file("${path.module}/../../../ec2/bin/cursor-workers-reconcile")
+    "bin/cursor-workers-autoscale"             = file("${path.module}/../../../ec2/bin/cursor-workers-autoscale")
+    "bin/cursor-workers-drain"                 = file("${path.module}/../../../ec2/bin/cursor-workers-drain")
+    "bin/cursor-workers-publish-metrics"       = file("${path.module}/../../../ec2/bin/cursor-workers-publish-metrics")
+    "systemd/cursor-workers-autoscale.service" = file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.service")
+    "systemd/cursor-workers-autoscale.timer"   = file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.timer")
+    "systemd/cursor-workers-metrics.service"   = file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.service")
+    "systemd/cursor-workers-metrics.timer"     = file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.timer")
+  }
+}
+
+data "archive_file" "bootstrap_assets" {
+  type        = "tar.gz"
+  output_path = "${path.module}/.generated/bootstrap-assets.tar.gz"
+
+  dynamic "source" {
+    for_each = local.bootstrap_asset_files
+    content {
+      filename = source.key
+      content  = source.value
+    }
+  }
+}
+
+locals {
   user_data = templatefile("${path.module}/../../templates/ec2-user-data.sh.tftpl", {
-    worker_user                        = var.worker_user
-    cursor_install_url                 = var.cursor_install_url
-    git_credential_helper_b64          = base64encode(file("${path.module}/../../../ec2/bin/git-credential-scm-secretsmanager"))
-    cursor_worker_start_b64            = base64encode(file("${path.module}/../../../ec2/bin/cursor-worker-start"))
-    cursor_workers_reconcile_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-reconcile"))
-    cursor_workers_autoscale_b64       = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-autoscale"))
-    cursor_workers_drain_b64           = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-drain"))
-    cursor_workers_publish_metrics_b64 = base64encode(file("${path.module}/../../../ec2/bin/cursor-workers-publish-metrics"))
-    autoscale_service_b64              = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.service"))
-    autoscale_timer_b64                = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-autoscale.timer"))
-    metrics_service_b64                = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.service"))
-    metrics_timer_b64                  = base64encode(file("${path.module}/../../../ec2/systemd/cursor-workers-metrics.timer"))
-    env_file_b64                       = base64encode(local.env_file)
-    labels_json_b64                    = base64encode(var.labels_json)
-    workers_json_b64                   = base64encode(local.workers_json)
-    repo_env_files_b64                 = var.repo_env_mappings == "" ? "" : base64encode(var.repo_env_mappings)
+    worker_user          = var.worker_user
+    cursor_install_url   = var.cursor_install_url
+    bootstrap_assets_b64 = filebase64(data.archive_file.bootstrap_assets.output_path)
+    env_file_b64         = base64encode(local.env_file)
+    labels_json_b64      = base64encode(var.labels_json)
+    workers_json_b64     = base64encode(local.workers_json)
+    repo_env_files_b64   = var.repo_env_mappings == "" ? "" : base64encode(var.repo_env_mappings)
   })
 
   secret_arns = concat(
@@ -412,7 +446,7 @@ resource "aws_iam_instance_profile" "worker" {
 
 resource "aws_security_group" "worker" {
   name        = "${var.name_prefix}-ec2-worker"
-  description = "Cursor worker EC2 instances. No inbound rules; outbound HTTPS and DNS only."
+  description = "Cursor worker EC2 instances. No inbound rules; outbound HTTPS/HTTP and DNS only."
   vpc_id      = var.vpc_id
   tags        = var.tags
 }
@@ -425,6 +459,17 @@ resource "aws_vpc_security_group_egress_rule" "https" {
   ip_protocol       = "tcp"
   from_port         = 443
   to_port           = 443
+}
+
+# Apt package mirrors still use HTTP. Worker runtime traffic remains HTTPS.
+resource "aws_vpc_security_group_egress_rule" "http" {
+  for_each          = toset(var.https_egress_cidr_blocks)
+  security_group_id = aws_security_group.worker.id
+  description       = "Allow outbound HTTP for package mirrors."
+  cidr_ipv4         = each.value
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
 }
 
 resource "aws_vpc_security_group_egress_rule" "dns_udp" {

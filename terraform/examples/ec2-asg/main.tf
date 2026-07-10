@@ -2,6 +2,10 @@ terraform {
   required_version = ">= 1.6.0"
 
   required_providers {
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
@@ -310,8 +314,8 @@ module "ec2_workers" {
 module "observability" {
   source = "../../modules/ec2-observability"
 
-  dashboard_name   = "${var.deployment_name}-ec2-workers"
-  metric_namespace = "Cursor/SelfHostedWorkers"
+  dashboard_name        = "${var.deployment_name}-ec2-workers"
+  metric_namespace      = "Cursor/SelfHostedWorkers"
   repo_metric_dimension = module.ec2_workers.repo_metric_dimension
 }
 
